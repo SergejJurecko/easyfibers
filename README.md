@@ -20,6 +20,18 @@ Uses 3 types of fibers:
 
 - TcpStream client that creates a request to external service and streams response back to parent fiber.
 
+Run the bottom example from one terminal:
+
+```
+cargo test -- --nocapture
+```
+
+And call it from another:
+
+```
+curl "http://127.0.0.1:10000"
+```
+
 ```rust
 extern crate easyfibers;
 extern crate rand;
