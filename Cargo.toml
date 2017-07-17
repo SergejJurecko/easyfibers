@@ -3,6 +3,12 @@ name = "easyfibers"
 version = "0.5.0"
 authors = ["sergej.jurecko@gmail.com"]
 build = "build.rs"
+description = "easyfibers is a closure-less couroutine library for executing asynchronous tasks as painlessly as possible."
+repository = "https://github.com/SergejJurecko/easyfibers"
+readme = "README.md"
+keywords = ["fibers", "coroutine", "mio", "context", "async"]
+categories = ["network-programming", "concurrency"]
+license = "MIT/Apache-2.0"
 
 [dependencies]
 rustyline = "1"
