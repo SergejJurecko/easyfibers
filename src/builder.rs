@@ -1,6 +1,9 @@
 use std::cmp;
 use std::time::Duration;
 
+// Shamelessly taken from tokio-timer
+// Copyright Tokio contributors
+
 /// Configures and builds a `Timer`
 ///
 /// A `Builder` is obtained by calling `wheel()`.

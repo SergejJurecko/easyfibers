@@ -25,12 +25,14 @@ pub struct Poller<P,R> {
 
 impl<P,R> Poller<P,R> {
     /// Start poller. This function does not block.
-    pub fn new() -> io::Result<Poller<P,R>> {
+    /// stack_size will be rounded up to next power of two.
+    /// If not set default value of context-rs will be used.
+    pub fn new(stack_size: Option<usize>) -> io::Result<Poller<P,R>> {
         unsafe {
             if get_runner() != ptr::null_mut() {
                 return Err(io::Error::new(io::ErrorKind::Other, "poller exists"));
             }
-            start_runner::<P,R>()?;
+            start_runner::<P,R>(stack_size)?;
         }
         Ok(Poller {
             p: PhantomData,
@@ -88,11 +90,13 @@ pub(crate) struct RunnerInt<P,R> {
     toexec_fibers: VecDeque<usize>,
     results: VecDeque<R>,
     wheel: Wheel,
+    stack_size: Option<usize>,
 }
 
 impl<P,R> RunnerInt<P,R> {
-    fn new() -> io::Result<RunnerInt<P,R>> {
+    fn new(stack_size: Option<usize>) -> io::Result<RunnerInt<P,R>> {
         Ok(RunnerInt {
+            stack_size,
             poll: Poll::new().expect("unable to start poller"),
             events: Events::with_capacity(1024),
             free_stacks: VecDeque::with_capacity(4),
@@ -283,9 +287,11 @@ impl<P,R> RunnerInt<P,R> {
 
     fn get_stack(&mut self) -> ProtectedFixedSizeStack {
         match self.free_stacks.pop_front() {
-            None => {
-                // ProtectedFixedSizeStack::new(4096*100).unwrap()
+            None if self.stack_size.is_none() => {
                 ProtectedFixedSizeStack::default()
+            }
+            None => {
+                ProtectedFixedSizeStack::new(self.stack_size.unwrap()).expect("Can not create stack")
             }
             Some(stack) => {
                 stack
@@ -438,9 +444,9 @@ extern "C" {
     fn set_runner(r: *mut c_void);
 }
 
-fn start_runner<'a,P,R>() -> io::Result<()> {
+fn start_runner<'a,P,R>(stack_size: Option<usize>) -> io::Result<()> {
     unsafe {
-        let r: *mut RunnerInt<P,R> = Box::into_raw(Box::new(RunnerInt::new()?));
+        let r: *mut RunnerInt<P,R> = Box::into_raw(Box::new(RunnerInt::new(stack_size)?));
         set_runner(r as *mut c_void);
         Ok(())
     }

@@ -127,7 +127,8 @@ mod tests {
         };
         // Start our fiber poller.
         // All fibers receive Param as parameter and return &[u8] as response.
-        let poll:Poller<Param,&[u8]> = Poller::new().unwrap();
+        // Set this stack lower to see some SIGBUS action.
+        let poll:Poller<Param,&[u8]> = Poller::new(Some(4096*3)).unwrap();
         // Start a TCP listener socket
         let listener = TcpListener::bind(&"127.0.0.1:10000".parse().unwrap()).unwrap();
         // Create a fiber from it. Listener socket will use sock_acceptor function.

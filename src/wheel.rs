@@ -4,6 +4,9 @@ use slab::Slab;
 use std::{cmp, mem, usize};
 use std::time::{Instant, Duration};
 
+// Shamelessly taken from tokio-timer
+// Copyright Tokio contributors
+
 type Task = usize;
 
 pub struct Wheel {
