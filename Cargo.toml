@@ -1,0 +1,17 @@
+[package]
+name = "easyfibers"
+version = "0.5.0"
+authors = ["sergej.jurecko@gmail.com"]
+build = "build.rs"
+
+[dependencies]
+rustyline = "1"
+mio = "0.6"
+context = "2"
+slab = "0.3"
+
+[dev-dependencies]
+rand = ""
+
+[build-dependencies]
+gcc = "0.3"
