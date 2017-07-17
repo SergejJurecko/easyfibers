@@ -14,14 +14,16 @@ Is the risk worth it? I think so. Given the ease of use compared to other corout
 
 Heavy use of closures makes the code ugly, produces awful compile errors and makes it hard to integrate with the rest of your code.
 
+# [Documentation](https://docs.rs/easyfibers/0.5.0/easyfibers/)
+
 # TODO
 
 - [x] Fiber scheduling on read,write,accept
 - [x] Child fibers
 - [x] Streaming responses
 - [ ] Files (using a thread pool)
-- [ ] Scheduling on mpsc::Receiver<R>
-- [ ] Scheduling on external poller
+- [ ] join_main to call main stack from fiber and Poller::continue to resume it
+
 
 
 # Example - random http/1.1 proxy
