@@ -10,6 +10,10 @@ easyfibers allows one to write code as if it used blocking sockets and does not 
 
 Eeach fiber is executed in its own stack. These stacks are much more limited and one must be careful as to not go over limit (as it will kill your app with a SIGBUS).
 
+Is the risk worth it? I think so. Given the ease of use compared to other coroutine/fiber libraries. I disagree with the (ab)use of clousures of other libraries. 
+
+Heavy use of closures makes the code ugly, produces awful compile errors and makes it hard to integrate with the rest of your code.
+
 # Example - random http/1.1 proxy
 
 Uses 3 types of fibers:
