@@ -16,6 +16,7 @@ use fiber::*;
 use std::marker::PhantomData;
 use wheel::Wheel;
 use builder::Builder;
+use native_tls::{TlsAcceptor, TlsStream, TlsConnector, HandshakeError};
 
 /// Poller that executes fibers on main stack.
 pub struct Poller<P,R> {
@@ -210,6 +211,43 @@ impl<P,R> RunnerInt<P,R> {
                     }
                 }
             }
+        }
+    }
+
+    pub(crate) fn tcp_tls_connect(&mut self, pos: usize, con: TlsConnector, domain: &str) -> io::Result<()> {
+        let mut sock = FiberSock::Empty;
+        swap(&mut self.fibers[pos].sock, &mut sock);
+        if let FiberSock::Tcp(tcp) = sock {
+            let mut cr = con.connect(domain, tcp);
+            loop {
+                match cr {
+                    Ok(tls) => {
+                        self.fibers[pos].sock = FiberSock::Tls(tls);
+                        return Ok(());
+                    }
+                    Err(HandshakeError::Interrupted(mid)) => {
+                        self.fibers[pos].sock = FiberSock::TlsTemp(mid);
+                        self.fibers[pos].register(&self.poll, Ready::readable())?;
+                        self.timed_step_out(pos);
+                        if self.fibers[pos].timed_out {
+                            self.fibers[pos].timed_out = false;
+                            return Err(io::Error::new(io::ErrorKind::TimedOut,"write timeout"));
+                        }
+                        let mut sock = FiberSock::Empty;
+                        swap(&mut self.fibers[pos].sock, &mut sock);
+                        if let FiberSock::TlsTemp(mid) = sock {
+                            cr = mid.handshake();
+                        } else {
+                            return Err(io::Error::new(io::ErrorKind::Other, "tls failure"));
+                        }
+                    }
+                    Err(HandshakeError::Failure(_)) => {
+                        return Err(io::Error::new(io::ErrorKind::Other, "tls failure"));
+                    }
+                }
+            }
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid socket"));
         }
     }
 

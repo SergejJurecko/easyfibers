@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use wheel::Token as WToken;
 use std::time::Duration;
 use std::collections::VecDeque;
+use native_tls::{TlsStream, TlsConnector, TlsAcceptor, MidHandshakeTlsStream};
 
 /// Fiber execute function. It receives current fiber, parameter that was used
 /// to start the fiber and returns result that will be result of fiber.
@@ -66,6 +67,14 @@ impl<P,R> Fiber<P,R> {
     /// between calling and created fiber.
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
         runner().register(Some(self.id), func, FiberSock::Tcp(tcp), param, None).map(|_|{()})
+    }
+
+    /// Start fiber on TLS connector.
+    ///
+    /// This function does not block and fiber gets executed on next poll(). There is no relationship
+    /// between calling and created fiber.
+    pub fn tcp_tls_connect(&self, con: TlsConnector, domain: &str) -> io::Result<()> {
+        runner::<P,R>().tcp_tls_connect(self.id, con, domain)
     }
 
     /// Start fiber on TCP listener.
@@ -236,6 +245,10 @@ pub(crate) enum FiberSock {
     Tcp(TcpStream),
     Udp(UdpSocket),
     Listener(TcpListener),
+    // TlsStream starts as TcpStream but morphs into TlsStream
+    // either through TlsAcceptor or TlsConnector
+    Tls(TlsStream<TcpStream>),
+    TlsTemp(MidHandshakeTlsStream<TcpStream>),
     Empty,
 }
 
@@ -245,6 +258,7 @@ impl FiberSock {
             &FiberSock::Tcp(ref tcp) => tcp,
             &FiberSock::Udp(ref udp) => udp,
             &FiberSock::Listener(ref tcp) => tcp,
+            &FiberSock::TlsTemp(ref tcp) => tcp.get_ref(),
             _ => panic!("Evented on an empty fiber"),
         }
     }
@@ -268,6 +282,7 @@ impl Read for FiberSock {
             FiberSock::Udp(ref mut udp) => udp.recv(buf),
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not read on listen socket")),
+            FiberSock::Tls(ref mut tcp) => tcp.read(buf),
             _ => panic!("Read on an empty fiber"),
         }
     }
@@ -280,6 +295,7 @@ impl Write for FiberSock {
             FiberSock::Udp(ref mut udp) => udp.send(buf),
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not write on listen socket")),
+            FiberSock::Tls(ref mut tcp) => tcp.write(buf),
             _ => panic!("Write on an empty fiber"),
         }
     }
@@ -290,6 +306,7 @@ impl Write for FiberSock {
             FiberSock::Udp(ref mut udp) => Ok(()),
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not flush on listen socket")),
+            FiberSock::Tls(ref mut tcp) => tcp.flush(),
             _ => panic!("Flush on an empty fiber"),
         }
     }
