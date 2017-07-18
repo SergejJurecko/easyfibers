@@ -14,7 +14,7 @@ Is the risk worth it? I think so. Given the ease of use compared to other corout
 
 Heavy use of closures makes the code ugly, produces awful compile errors and makes it hard to integrate with the rest of your code.
 
-# [Documentation](https://docs.rs/easyfibers/0.5.0/easyfibers/)
+# [Documentation](https://docs.rs/easyfibers/0.6.0/easyfibers/)
 
 # TODO
 
