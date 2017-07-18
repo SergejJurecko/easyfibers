@@ -40,13 +40,25 @@ impl<P,R> Poller<P,R> {
         })
     }
 
-    /// Execute fibers and timers. Returns a VecDeque of results which you should call drain(..) on.
+    /// Execute fibers and timers. 
+    /// Returns true if anything changed and you should call pop_response and pop_fiber.
     ///
     /// Set wait to maximum amount of time poller should wait for sockets to wake up. This affects
     /// socket timers so do not set it too large. Recommended values between 0 (if you have
     /// something else to do) and 250.
-    pub fn poll(&self, wait: Duration) -> &mut VecDeque<R> {
+    pub fn poll(&self, wait: Duration) -> bool {
         runner::<P,R>().poll(wait)
+    }
+
+    /// Get a response from fiber if any available.
+    pub fn get_response(&self) -> Option<R> {
+        runner::<P,R>().iter_responses()
+    }
+
+    /// Get a fiber if any that has called join_main and is blocking waiting for
+    /// main stack to resume it.
+    pub fn get_fiber(&self) -> Option<FiberRef<P,R>> {
+        runner::<P,R>().iter_fibers()
     }
 
     /// Start fiber on TCP socket.
@@ -88,6 +100,7 @@ pub(crate) struct RunnerInt<P,R> {
     fibers: Vec<FiberInt<P,R>>,
     free_fibers: VecDeque<usize>,
     toexec_fibers: VecDeque<usize>,
+    tomain_fibers: VecDeque<FiberRef<P,R>>,
     results: VecDeque<R>,
     wheel: Wheel,
     stack_size: Option<usize>,
@@ -103,6 +116,7 @@ impl<P,R> RunnerInt<P,R> {
             fibers: Vec::new(),
             free_fibers: VecDeque::with_capacity(4),
             toexec_fibers: VecDeque::with_capacity(4),
+            tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
             wheel: Wheel::new(&Builder::new().tick_duration(Duration::from_millis(250))),
         })
@@ -203,6 +217,19 @@ impl<P,R> RunnerInt<P,R> {
         self.fibers[pos].sock.flush()
     }
 
+    pub(crate) fn join_main(&mut self, pos: usize) -> R {
+        self.tomain_fibers.push_back(FiberRef::new(pos));
+        self.step_out(pos);
+        let mut rs = None;
+        swap(&mut self.fibers[pos].result, &mut rs);
+        rs.unwrap()
+    }
+
+    pub(crate) fn resume_fiber(&mut self, pos: usize, resp: R) {
+        self.fibers[pos].result = Some(resp);
+        self.toexec_fibers.push_back(pos);
+    }
+
     pub(crate) fn register(&mut self, origin:Option<usize>, func: FiberFn<P,R>, 
             ft: FiberSock, param: P, parent: Option<usize>) -> io::Result<Option<usize>> {
 
@@ -210,7 +237,7 @@ impl<P,R> RunnerInt<P,R> {
             ready: Ready::empty(),
             param: Some(param),
             me: 0,
-            state: FiberState::Closed,
+            state: FiberState::Unstacked,
             func,
             sock: ft,
             t: None,
@@ -256,7 +283,11 @@ impl<P,R> RunnerInt<P,R> {
             let mut child = None;
             let mut index = 0;
             for c in self.fibers[parent].children.iter() {
-                if self.fibers[*c].result.is_some() {
+                if self.fibers[*c].state == FiberState::Closed {
+                    child = Some(*c);
+                    break;
+                }
+                else if self.fibers[*c].result.is_some() {
                     child = Some(*c);
                     break;
                 }
@@ -273,7 +304,10 @@ impl<P,R> RunnerInt<P,R> {
                     // Now that we have taken its result schedule it back for execution.
                     self.toexec_fibers.push_back(child);
                 }
-                return out;
+
+                if out.is_some() {
+                    return out;
+                }
             } else {
                 self.step_out(parent);
             }
@@ -386,17 +420,34 @@ impl<P,R> RunnerInt<P,R> {
     fn take_result(&mut self, pos: usize) {
         let mut rs = None;
         swap(&mut self.fibers[pos].result, &mut rs);
-        let rs = rs.unwrap();
-        self.results.push_back(rs);
+        if let Some(r) = rs {
+            self.results.push_back(r);
+        }
     }
 
-    fn poll(&mut self, dur: Duration) -> &mut VecDeque<R> {
+    fn iter_responses(&mut self) -> Option<R> {
+        self.results.pop_front()
+    }
+
+    fn iter_fibers(&mut self) -> Option<FiberRef<P,R>> {
+        self.tomain_fibers.pop_front()
+    }
+
+    fn signaled(&self) -> bool {
+        !self.tomain_fibers.is_empty() || !self.results.is_empty()
+    }
+
+    fn poll(&mut self, mut dur: Duration) -> bool {
         while let Some(pos) = self.toexec_fibers.pop_front() {
             self.step_into(pos);
         }
 
+        // no waiting if fibers waiting for main stack
+        if self.tomain_fibers.len() > 0 {
+            dur = Duration::from_millis(0);
+        }
         if let Err(_) = self.poll.poll(&mut self.events, Some(dur)) {
-            return &mut self.results;
+            return self.signaled();
         }
 
         if self.events.len() > 0 {
@@ -417,7 +468,7 @@ impl<P,R> RunnerInt<P,R> {
                 self.step_into(pos);
             }
         }
-        &mut self.results
+        self.signaled()
     }
 }
 
@@ -428,7 +479,7 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
         let mut param = None;
         swap(&mut fiber.param, &mut param);
         let param = param.unwrap();
-        fiber.result = Some((fiber.func)(Fiber::new(fiber.me), param));
+        fiber.result = (fiber.func)(Fiber::new(fiber.me), param);
         // if fiber.state == FiberState::Stacked {
             fiber.state = FiberState::Closed;
         // }

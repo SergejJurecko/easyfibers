@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 /// so you must either be careful with how deep your stack can get, or set the stack to a high value.
 ///
 /// You must test your code for any possible SIGBUS situations and be careful with calling external crates.
-pub type FiberFn<P,R> = fn(Fiber<P,R>,P) -> R;
+pub type FiberFn<P,R> = fn(Fiber<P,R>,P) -> Option<R>;
 
 /// Available within the fiber execute function to configure fiber or create child fibers. Child fibers
 /// return results to parent fibers instead of poller on main stack.
@@ -55,6 +55,11 @@ impl<P,R> Fiber<P,R> {
         runner::<P,R>().resp_chunk(self.id, chunk);
     }
 
+    /// Accept TCP socket. Works only on fibers from TcpListener.
+    pub fn accept_tcp(&self) -> io::Result<(TcpStream, SocketAddr)> {
+        runner::<P,R>().accept_tcp(self.id)
+    }
+
     /// Start fiber on TCP socket.
     ///
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
@@ -79,10 +84,11 @@ impl<P,R> Fiber<P,R> {
         runner().register(Some(self.id), func, FiberSock::Udp(udp), param, None).map(|_|{()})
     }
 
-    /// Get result of child. Will block current fiber if nothing available immediately.
+    /// Get result of child. If fiber has multiple children it will return first available result.
+    /// Will block current fiber if nothing available immediately.
     ///
     /// If none is returned all children have finished executing.
-    pub fn iter_children(&self) -> Option<R> {
+    pub fn get_child(&self) -> Option<R> {
         runner::<P,R>().child_iter(self.id)
     }
 
@@ -120,8 +126,11 @@ impl<P,R> Fiber<P,R> {
         }
     }
 
-    pub fn accept_tcp(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        runner::<P,R>().accept_tcp(self.id)
+    /// Call main stack.
+    ///
+    /// This function blocks until main stack produces response.
+    pub fn join_main(&self, param: P) -> R {
+        runner::<P,R>().join_main(self.id)
     }
 }
 
@@ -155,11 +164,35 @@ impl<P,R> Write for Fiber<P,R> {
     }
 }
 
+/// Reference to fiber on main stack.
+pub struct FiberRef<P,R> {
+    pub(crate) id: usize,
+    p: PhantomData<P>,
+    r: PhantomData<R>,
+}
+
+impl<P,R> FiberRef<P,R> {
+    pub(crate) fn new(id: usize) -> FiberRef<P,R> {
+        FiberRef {
+            id,
+            p: PhantomData,
+            r: PhantomData,
+        }
+    }
+
+    /// Resume fiber with response from main stack.
+    ///
+    /// This function does not block, fiber gets resumed on next poll().
+    pub fn resume_fiber(self, resp: R) {
+        runner::<P,R>().resume_fiber(self.id, resp);
+    }
+}
+
 #[derive(PartialEq)]
 pub(crate) enum FiberState {
     Closed,
     Stacked,
-    // Unstacked,
+    Unstacked,
 }
 
 pub(crate) struct FiberInt<P,R> {

@@ -1,6 +1,7 @@
 
 //! easyfibers is a closure-less couroutine library for executing asynchronous tasks as painlessly as possible. 
-
+//!
+//! Code example at: https://github.com/SergejJurecko/easyfibers
 extern crate context;
 extern crate mio;
 extern crate slab;
@@ -19,12 +20,7 @@ mod wheel;
 mod builder;
 
 pub use runner::Poller;
-pub use fiber::{Fiber, FiberFn};
-
-
-// TODO:
-// call something on main stack
-// builder
+pub use fiber::{Fiber, FiberFn, FiberRef};
 
 #[cfg(test)]
 mod tests {
@@ -44,7 +40,7 @@ mod tests {
 
     // Receive list of hosts.
     // Return slices.
-    fn get_http(mut fiber: Fiber<Param,&[u8]>, p: Param) -> &[u8] {
+    fn get_http(mut fiber: Fiber<Param,&[u8]>, p: Param) -> Option<&[u8]> {
         // Because we are too dumb to read content-length, we will use socket read timeout to finish
         // http client request.
         fiber.socket_timeout(Some(Duration::from_millis(500)));
@@ -69,10 +65,10 @@ mod tests {
             }
         }
         println!("Client fiber closing");
-        b"client"
+        None
     }
 
-    fn rand_http_proxy(mut fiber: Fiber<Param,&[u8]>, p: Param) -> &[u8] {
+    fn rand_http_proxy(mut fiber: Fiber<Param,&[u8]>, p: Param) -> Option<&[u8]> {
         fiber.socket_timeout(Some(Duration::from_millis(500)));
 
         // Pick a random host from our list.
@@ -90,15 +86,16 @@ mod tests {
 
         // Fibers can stream response to parent. So we iterate on responses.
         // We could also create multiple children and iterate on all of them.
-        while let Some(slice) = fiber.iter_children() {
+        while let Some(slice) = fiber.get_child() {
             fiber.write(slice);
         }
         println!("Server socket fiber closing");
-        b"server"
+        // return empty slice, so main stack knows a server connection has closed
+        Some(&[])
     }
 
     // Accept sockets in an endless loop.
-    fn sock_acceptor(mut fiber: Fiber<Param,&[u8]>, p: Param) -> &[u8] {
+    fn sock_acceptor(mut fiber: Fiber<Param,&[u8]>, p: Param) -> Option<&[u8]> {
         loop {
             // If no sockets available, fiber will be scheduled out for execution until something connects. 
             match fiber.accept_tcp() {
@@ -112,7 +109,7 @@ mod tests {
                 }
             }
         }
-        b"listener"
+        None
     }
 
     #[test]
@@ -136,9 +133,15 @@ mod tests {
         // Poll for 3 requests before exiting.
         let mut reqs_remain = 3;
         while reqs_remain > 0 {
-            for res in poll.poll(Duration::from_millis(10)).drain(..) {
-                println!("Finished executing {}, req_remain: {}", str::from_utf8(res).unwrap(),reqs_remain);
-                reqs_remain -= 1;
+            if poll.poll(Duration::from_millis(10)) {
+                while let Some(r) = poll.get_response() {
+                    println!("Finished executing, req_remain: {}", reqs_remain);
+                    reqs_remain -= 1;
+                }
+
+                // we arent using 
+                while let Some(f) = poll.get_fiber() {
+                }
             }
         }
         println!("poll out");
