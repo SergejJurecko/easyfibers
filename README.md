@@ -22,7 +22,7 @@ Heavy use of closures makes the code ugly, produces awful compile errors and mak
 - [x] Child fibers
 - [x] Streaming responses
 - [ ] Files (using a thread pool)
-- [x] join_main to call main stack from fiber and Poller::continue to resume it (not released yet)
+- [x] join_main to call main stack from fiber and resume_fiber to resume it
 - [ ] SSL/TLS
 
 
