@@ -61,28 +61,22 @@ impl<P,R> Fiber<P,R> {
         runner::<P,R>().accept_tcp(self.id)
     }
 
+    /// Convert fiber from TcpStream created with TcpStream::connect to TlsStream.
+    pub fn tcp_tls_connect(&self, con: TlsConnector, domain: &str) -> io::Result<()> {
+        runner::<P,R>().tcp_tls_connect(self.id, con, domain)
+    }
+
+    /// Convert fiber from TcpStream created with TcpListener::accept to TlsStream.
+    pub fn tcp_tls_accept(&self, con: TlsAcceptor) -> io::Result<()> {
+        runner::<P,R>().tcp_tls_accept(self.id, con)
+    }
+
     /// Start fiber on TCP socket.
     ///
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
         runner().register(Some(self.id), func, FiberSock::Tcp(tcp), param, None).map(|_|{()})
-    }
-
-    /// Convert fiber from TcpStream created with TcpStream::connect to TlsStream.
-    ///
-    /// This function does not block and fiber gets executed on next poll(). There is no relationship
-    /// between calling and created fiber.
-    pub fn tcp_tls_connect(&self, con: TlsConnector, domain: &str) -> io::Result<()> {
-        runner::<P,R>().tcp_tls_connect(self.id, con, domain)
-    }
-
-    /// Convert fiber from TcpStream created with TcpListener::accept to TlsStream.
-    ///
-    /// This function does not block and fiber gets executed on next poll(). There is no relationship
-    /// between calling and created fiber.
-    pub fn tcp_tls_accept(&self, con: TlsAcceptor) -> io::Result<()> {
-        runner::<P,R>().tcp_tls_accept(self.id, con)
     }
 
     /// Start fiber on TCP listener.
@@ -99,14 +93,6 @@ impl<P,R> Fiber<P,R> {
     /// between calling and created fiber.
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
         runner().register(Some(self.id), func, FiberSock::Udp(udp), param, None).map(|_|{()})
-    }
-
-    /// Get result of child. If fiber has multiple children it will return first available result.
-    /// Will block current fiber if nothing available immediately.
-    ///
-    /// If none is returned all children have finished executing.
-    pub fn get_child(&self) -> Option<R> {
-        runner::<P,R>().child_iter(self.id)
     }
 
     /// Start a child fiber with tcp socket.
@@ -148,6 +134,14 @@ impl<P,R> Fiber<P,R> {
     /// This function blocks until main stack produces response.
     pub fn join_main(&self, param: P) -> R {
         runner::<P,R>().join_main(self.id)
+    }
+
+    /// Get result of child. If fiber has multiple children it will return first available result.
+    /// Will block current fiber if nothing available immediately.
+    ///
+    /// If none is returned all children have finished executing.
+    pub fn get_child(&self) -> Option<R> {
+        runner::<P,R>().child_iter(self.id)
     }
 }
 
