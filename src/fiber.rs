@@ -69,12 +69,20 @@ impl<P,R> Fiber<P,R> {
         runner().register(Some(self.id), func, FiberSock::Tcp(tcp), param, None).map(|_|{()})
     }
 
-    /// Start fiber on TLS connector.
+    /// Convert fiber from TcpStream created with TcpStream::connect to TlsStream.
     ///
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn tcp_tls_connect(&self, con: TlsConnector, domain: &str) -> io::Result<()> {
         runner::<P,R>().tcp_tls_connect(self.id, con, domain)
+    }
+
+    /// Convert fiber from TcpStream created with TcpListener::accept to TlsStream.
+    ///
+    /// This function does not block and fiber gets executed on next poll(). There is no relationship
+    /// between calling and created fiber.
+    pub fn tcp_tls_accept(&self, con: TlsAcceptor) -> io::Result<()> {
+        runner::<P,R>().tcp_tls_accept(self.id, con)
     }
 
     /// Start fiber on TCP listener.

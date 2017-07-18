@@ -24,6 +24,8 @@ pub struct Poller<P,R> {
     r: PhantomData<R>,
 }
 
+type TlsResult = Result<TlsStream<TcpStream>,HandshakeError<TcpStream>>;
+
 impl<P,R> Poller<P,R> {
     /// Start poller. This function does not block.
     /// stack_size will be rounded up to next power of two.
@@ -218,8 +220,26 @@ impl<P,R> RunnerInt<P,R> {
         let mut sock = FiberSock::Empty;
         swap(&mut self.fibers[pos].sock, &mut sock);
         if let FiberSock::Tcp(tcp) = sock {
-            let mut cr = con.connect(domain, tcp);
-            loop {
+            let cr = con.connect(domain, tcp);
+            self.tls_handshake(pos, cr)
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid socket"));
+        }
+    }
+
+    pub(crate) fn tcp_tls_accept(&mut self, pos: usize, con: TlsAcceptor) -> io::Result<()> {
+        let mut sock = FiberSock::Empty;
+        swap(&mut self.fibers[pos].sock, &mut sock);
+        if let FiberSock::Tcp(tcp) = sock {
+            let cr = con.accept(tcp);
+            self.tls_handshake(pos, cr)
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid socket"));
+        }
+    }
+
+    fn tls_handshake(&mut self, pos: usize, mut cr: TlsResult) -> io::Result<()> {
+        loop {
                 match cr {
                     Ok(tls) => {
                         self.fibers[pos].sock = FiberSock::Tls(tls);
@@ -246,9 +266,6 @@ impl<P,R> RunnerInt<P,R> {
                     }
                 }
             }
-        } else {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid socket"));
-        }
     }
 
     pub(crate) fn flush(&mut self, pos: usize) -> io::Result<()> {
