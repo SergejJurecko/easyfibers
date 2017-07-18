@@ -23,7 +23,7 @@ Heavy use of closures makes the code ugly, produces awful compile errors and mak
 - [x] Streaming responses
 - [ ] Files (using a thread pool)
 - [ ] join_main to call main stack from fiber and Poller::continue to resume it
-
+- [ ] SSL/TLS
 
 
 # Example - random http/1.1 proxy
