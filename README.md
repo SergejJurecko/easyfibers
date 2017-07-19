@@ -38,6 +38,7 @@ Heavy use of closures makes the code ugly, produces awful compile errors and mak
 - [x] (unreleased) SSL/TLS
 - [ ] Fiber::hibernate_XX for keep-alive scenarios
 - [ ] FiberLayer trait to compose services
+- [ ] Timer based fibers
 
 
 # Example - random http/1.1 proxy
