@@ -143,6 +143,11 @@ impl<P,R> Fiber<P,R> {
     pub fn get_child(&self) -> Option<R> {
         runner::<P,R>().child_iter(self.id)
     }
+
+    /// Remove stack from current fiber and reuse on other connections. Once socket becomes signalled
+    /// for reads, resume from the start of FiberFn.
+    pub fn hibernate_on_read(&self) {
+    }
 }
 
 // We use unwrap directly as we do not allow

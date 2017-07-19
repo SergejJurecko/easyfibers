@@ -1,3 +1,8 @@
+# 0.6.1 ??
+
+* SSL/TLS support using Fiber::tcp_tls_connect and Fiber::tcp_tls_accept
+* Fiber::hibernate function for keep-alive scenarios. Once socket has data to read or is closed, fiber function will be called on it from beginning. While in hibernation stack is reused for other fibers.
+
 # 0.6.0 (Jul 18, 2017)
 
 * Changed api: Poller::poll(_) now returns bool to signal you should call poll.get_response() and poll.get_get_fiber()

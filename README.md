@@ -23,7 +23,9 @@ Heavy use of closures makes the code ugly, produces awful compile errors and mak
 - [x] Streaming responses
 - [ ] Files (using a thread pool)
 - [x] join_main to call main stack from fiber and resume_fiber to resume it
-- [ ] SSL/TLS
+- [x] (unreleased) SSL/TLS
+- [ ] Fiber::hibernate_XX for keep-alive scenarios
+- [ ] FiberLayer trait to compose services
 
 
 # Example - random http/1.1 proxy
