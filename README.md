@@ -12,7 +12,7 @@ Have easyfibers stacks run protocols, have client code on main stack (using Fibe
 
 This way:
 
-- Protocol implementations can be done in a straightforward way.
+- Protocol implementations can be done efficiently and in a straightforward way.
 
 - Users of protocol clients and servers have no issues with stack size.
 
