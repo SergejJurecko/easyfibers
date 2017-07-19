@@ -6,6 +6,18 @@ easyfibers is a closure-less couroutine library for executing asynchronous tasks
 
 easyfibers allows one to write code as if it used blocking sockets and does not require putting your code in awkward closures. It will seamlessly poll and schedule fibers on read, write and accept function calls.
 
+# Vision
+
+Have easyfibers stacks run protocols, have client code on main stack (using Fiber::join_main). 
+
+This way:
+
+- Protocol implementations can be done in a straightforward way.
+
+- Users of protocol clients and servers have no issues with stack size.
+
+- Users are free to implement their code whichever way they want outside of any framework restrictions; without forcing their code into callbacks or closures.
+
 # Warning
 
 Eeach fiber is executed in its own stack. These stacks are much more limited and one must be careful as to not go over limit (as it will kill your app with a SIGBUS).
