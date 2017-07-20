@@ -374,6 +374,15 @@ impl<P,R> RunnerInt<P,R> {
         self.step_out(pos);
     }
 
+    pub(crate) fn hibernate_for_read(&mut self, pos: usize) -> io::Result<()> {
+        self.fibers[pos].state = FiberState::Unstacked;
+        if !self.fibers[pos].ready.is_readable() {
+            self.fibers[pos].register(&self.poll, Ready::readable())?;
+        }
+        self.step_out(pos);
+        Ok(())
+    }
+
     fn get_stack(&mut self) -> ProtectedFixedSizeStack {
         match self.free_stacks.pop_front() {
             None if self.stack_size.is_none() => {

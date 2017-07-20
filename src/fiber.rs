@@ -146,7 +146,8 @@ impl<P,R> Fiber<P,R> {
 
     /// Remove stack from current fiber and reuse on other connections. Once socket becomes signalled
     /// for reads, resume from the start of FiberFn.
-    pub fn hibernate_on_read(&self) {
+    pub fn hibernate_for_read(&self) -> io::Result<()> {
+        runner::<P,R>().hibernate_for_read(self.id)
     }
 }
 
@@ -290,7 +291,7 @@ impl Read for FiberSock {
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not read on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.read(buf),
-            _ => panic!("Read on an empty fiber"),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
         }
     }
 }
@@ -303,7 +304,7 @@ impl Write for FiberSock {
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not write on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.write(buf),
-            _ => panic!("Write on an empty fiber"),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
         }
     }
 
@@ -314,7 +315,7 @@ impl Write for FiberSock {
             FiberSock::Listener(ref tcp) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not flush on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.flush(),
-            _ => panic!("Flush on an empty fiber"),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
         }
     }
 }
