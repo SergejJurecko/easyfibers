@@ -68,21 +68,31 @@ impl<P,R> Poller<P,R> {
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(None, func, FiberSock::Tcp(tcp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(None, func, FiberSock::Listener(tcp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(None, func, FiberSock::Udp(udp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
+    }
+
+    /// Return resp after dur. Timer is one-shot.
+    pub fn new_timer(&self, dur: Duration, resp: R) -> Option<TimerRef<P,R>> {
+        runner::<P,R>().new_timer(None, dur, None, Some(resp))
+    }
+
+    /// Run socket-less fiber after dur.
+    pub fn new_fiber_timer(&self, dur: Duration, func: FiberFn<P,R>, param: P) -> Option<TimerRef<P,R>> {
+        runner::<P,R>().new_timer(Some(func), dur, Some(param), None)
     }
 }
 
@@ -285,12 +295,40 @@ impl<P,R> RunnerInt<P,R> {
         self.toexec_fibers.push_back(pos);
     }
 
-    pub(crate) fn register(&mut self, origin:Option<usize>, func: FiberFn<P,R>, 
-            ft: FiberSock, param: P, parent: Option<usize>) -> io::Result<Option<usize>> {
+    pub(crate) fn new_timer(&mut self, 
+        func: Option<FiberFn<P,R>>,
+        dur: Duration,
+        param: Option<P>,
+        resp: Option<R>) -> Option<TimerRef<P,R>> {
 
+        if let Ok(pos) = self.register(func, FiberSock::Empty, param, None) {
+            self.fibers[pos].result = resp;
+            if let Some(tk) = self.wheel.reserve() {
+                self.wheel.set_timeout(tk, Instant::now() + dur, pos);
+                self.fibers[pos].wtoken = Some(tk);
+                return Some(TimerRef::new(pos));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn cancel_timer(&mut self, pos: usize) {
+        if let Some(tk) = self.fibers[pos].wtoken {
+            self.wheel.cancel(tk);
+            self.fibers[pos].wtoken = None;
+            self.fibers[pos].result = None;
+            self.fibers[pos].param = None;
+            self.free_fibers.push_back(pos);
+        }
+    }
+
+    pub(crate) fn register(&mut self, func: Option<FiberFn<P,R>>, 
+            ft: FiberSock, param: Option<P>, parent: Option<usize>) -> io::Result<usize> {
+
+        let empty = ft.is_empty();
         let mut fiber = FiberInt {
             ready: Ready::empty(),
-            param: Some(param),
+            param,
             me: 0,
             state: FiberState::Unstacked,
             func,
@@ -322,12 +360,14 @@ impl<P,R> RunnerInt<P,R> {
                 self.fibers.len() - 1
             }
         };
-        self.toexec_fibers.push_back(pos);
+        // Timers have no socks. They get scheduled by timer.
+        if !empty {
+            self.toexec_fibers.push_back(pos);
+        }
         if let Some(parent) = parent {
             self.fibers[parent].children.push_back(pos);
-            return Ok(Some(pos));
         }
-        Ok(None)
+        Ok(pos)
     }
 
     pub(crate) fn child_iter(&mut self, parent: usize) -> Option<R> {
@@ -424,19 +464,23 @@ impl<P,R> RunnerInt<P,R> {
 
     // Main stack -> Fiber
     fn step_into(&mut self, pos: usize) {
-        if self.fibers[pos].t.is_none() {
-            let stack = self.get_stack();
-            let fiber = &mut self.fibers[pos];
-            let t = Transfer::new(unsafe { Context::new(&stack, context_function::<P,R>) }, 0);
-            fiber.stack = Some(stack);
-            fiber.t = Some(t);
+        if self.fibers[pos].func.is_some() {
+            if self.fibers[pos].t.is_none() {
+                let stack = self.get_stack();
+                let fiber = &mut self.fibers[pos];
+                let t = Transfer::new(unsafe { Context::new(&stack, context_function::<P,R>) }, 0);
+                fiber.stack = Some(stack);
+                fiber.t = Some(t);
+            }
+            let mut t = None;
+            swap(&mut self.fibers[pos].t, &mut t);
+            let mut t = t.unwrap();
+            t = unsafe { t.context.resume(transmute::<&FiberInt<P,R>, usize>(&self.fibers[pos])) };
+            let mut t = Some(t);
+            swap(&mut self.fibers[pos].t, &mut t);
+        } else {
+            self.fibers[pos].state = FiberState::Closed;
         }
-        let mut t = None;
-        swap(&mut self.fibers[pos].t, &mut t);
-        let mut t = t.unwrap();
-        t = unsafe { t.context.resume(transmute::<&FiberInt<P,R>, usize>(&self.fibers[pos])) };
-        let mut t = Some(t);
-        swap(&mut self.fibers[pos].t, &mut t);
 
         self.stepped_out(pos);
     }
@@ -543,7 +587,7 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
         let mut param = None;
         swap(&mut fiber.param, &mut param);
         let param = param.unwrap();
-        fiber.result = (fiber.func)(Fiber::new(fiber.me), param);
+        fiber.result = (fiber.func.unwrap())(Fiber::new(fiber.me), param);
         // if fiber.state == FiberState::Stacked {
             fiber.state = FiberState::Closed;
         // }

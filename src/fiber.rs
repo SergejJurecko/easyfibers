@@ -76,7 +76,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(self.id), func, FiberSock::Tcp(tcp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
@@ -84,7 +84,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(self.id), func, FiberSock::Listener(tcp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
@@ -92,19 +92,16 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(self.id), func, FiberSock::Udp(udp), param, None).map(|_|{()})
+        runner().register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
     }
 
     /// Start a child fiber with tcp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        match runner::<P,R>().register(Some(self.id), func, FiberSock::Tcp(tcp), param, Some(self.id)) {
-            Ok(Some(_)) => {
+        match runner::<P,R>().register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)) {
+            Ok(_) => {
                 Ok(())
-            }
-            Ok(None) => {
-                Err(io::Error::new(io::ErrorKind::Other, "can not create child"))
             }
             Err(e) => {
                 Err(e)
@@ -116,12 +113,9 @@ impl<P,R> Fiber<P,R> {
     ///
     /// This function does not block current fiber.
     pub fn join_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        match runner::<P,R>().register(Some(self.id), func, FiberSock::Udp(udp), param, Some(self.id)) {
-            Ok(Some(_)) => {
+        match runner::<P,R>().register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)) {
+            Ok(_) => {
                 Ok(())
-            }
-            Ok(None) => {
-                Err(io::Error::new(io::ErrorKind::Other, "can not create child"))
             }
             Err(e) => {
                 Err(e)
@@ -205,6 +199,29 @@ impl<P,R> FiberRef<P,R> {
     }
 }
 
+/// Reference to timer on main stack.
+pub struct TimerRef<P,R> {
+    pub(crate) id: usize,
+    p: PhantomData<P>,
+    r: PhantomData<R>,
+}
+
+impl<P,R> TimerRef<P,R> {
+    pub(crate) fn new(id: usize) -> TimerRef<P,R> {
+        TimerRef {
+            id,
+            p: PhantomData,
+            r: PhantomData,
+        }
+    }
+}
+
+impl<P,R> Drop for TimerRef<P,R> {
+    fn drop(&mut self) {
+        runner::<P,R>().cancel_timer(self.id);
+    }
+}
+
 #[derive(PartialEq)]
 pub(crate) enum FiberState {
     Closed,
@@ -218,7 +235,7 @@ pub(crate) struct FiberInt<P,R> {
     pub(crate) param: Option<P>,
     pub(crate) state: FiberState,
     pub(crate) me: usize,
-    pub(crate) func: FiberFn<P,R>,
+    pub(crate) func: Option<FiberFn<P,R>>,
     pub(crate) sock: FiberSock,
     // Only when executing is stack and transfer here
     pub(crate) t: Option<Transfer>,
@@ -261,6 +278,12 @@ pub(crate) enum FiberSock {
 }
 
 impl FiberSock {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            &FiberSock::Empty => true,
+            _ => false,
+        }
+    }
     pub fn evented(&self) -> &Evented {
         match self {
             &FiberSock::Tcp(ref tcp) => tcp,
