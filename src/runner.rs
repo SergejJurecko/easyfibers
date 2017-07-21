@@ -16,6 +16,7 @@ use std::marker::PhantomData;
 use wheel::Wheel;
 use builder::Builder;
 use native_tls::{TlsAcceptor, TlsStream, TlsConnector, HandshakeError};
+use dns;
 
 /// Poller that executes fibers on main stack.
 pub struct Poller<P,R> {
@@ -116,6 +117,7 @@ pub(crate) struct RunnerInt<P,R> {
     results: VecDeque<R>,
     wheel: Wheel,
     stack_size: Option<usize>,
+    dns_servers: Vec<String>,
 }
 
 impl<P,R> RunnerInt<P,R> {
@@ -131,6 +133,7 @@ impl<P,R> RunnerInt<P,R> {
             tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
             wheel: Wheel::new(&Builder::new().tick_duration(Duration::from_millis(250))),
+            dns_servers: dns::get_dns_servers(),
         })
     }
 

@@ -22,6 +22,7 @@ mod wheel;
 mod builder;
 #[allow(dead_code)]
 mod dns_parser;
+mod dns;
 
 pub use runner::Poller;
 pub use fiber::{Fiber, FiberFn, FiberRef};
@@ -37,38 +38,7 @@ mod tests {
     use std::str;
     use native_tls::{TlsConnector};
 
-
-    fn scutil_parse(s: String) -> Vec<String> {
-        let mut out = Vec::with_capacity(2);
-        for line in s.lines() {
-            let mut words = line.split_whitespace();
-            if let Some(s) = words.next() {
-                if s.starts_with("nameserver[") {
-                    if let Some(s) = words.next() {
-                        if s == ":" {
-                            if let Some(s) = words.next() {
-                                out.push(s.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn get_dns_servers() -> Vec<String> {
-        let out = ::std::process::Command::new("scutil")
-            .arg("--dns")
-            .output();
-        if let Ok(out) = out {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                return scutil_parse(s);
-            }
-        }
-        return vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]
-    }
-
+    use dns;
     use dns_parser;
     use dns_parser::{Packet,RRData};
     #[test]
@@ -82,7 +52,7 @@ mod tests {
                 dns_parser::QueryClass::IN);
             builder.finish()
         };
-        let srvs = get_dns_servers();
+        let srvs = dns::get_dns_servers();
         println!("Sending {} {}", srvs[0], nsend);
 
         let mut socket = ::std::net::UdpSocket::bind("0.0.0.0:0").expect("sock fails");
