@@ -6,19 +6,22 @@ extern crate context;
 extern crate mio;
 extern crate slab;
 extern crate native_tls;
+extern crate rand;
+extern crate byteorder;
+#[macro_use(quick_error)]
+extern crate quick_error;
+#[cfg(test)]
+#[macro_use]
+extern crate matches;
 
-#[allow(dead_code)]
-#[allow(unused_variables)]
-#[allow(unused_imports)]
 mod fiber;
-#[allow(dead_code)]
-#[allow(unused_variables)]
-#[allow(unused_imports)]
 mod runner;
 #[allow(dead_code)]
 mod wheel;
 #[allow(dead_code)]
 mod builder;
+#[allow(dead_code)]
+mod dns_parser;
 
 pub use runner::Poller;
 pub use fiber::{Fiber, FiberFn, FiberRef};
@@ -33,6 +36,75 @@ mod tests {
     use std::io;
     use std::str;
     use native_tls::{TlsConnector};
+
+
+    fn scutil_parse(s: String) -> Vec<String> {
+        let mut out = Vec::with_capacity(2);
+        for line in s.lines() {
+            let mut words = line.split_whitespace();
+            if let Some(s) = words.next() {
+                if s.starts_with("nameserver[") {
+                    if let Some(s) = words.next() {
+                        if s == ":" {
+                            if let Some(s) = words.next() {
+                                out.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn get_dns_servers() -> Vec<String> {
+        let out = ::std::process::Command::new("scutil")
+            .arg("--dns")
+            .output();
+        if let Ok(out) = out {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                return scutil_parse(s);
+            }
+        }
+        return vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]
+    }
+
+    use dns_parser;
+    use dns_parser::{Packet,RRData};
+    #[test]
+    fn dnsq() {
+        let mut buf_send = [0; 512];
+        let nsend = {
+            let mut builder = dns_parser::Builder::new(&mut buf_send[..]);
+            builder.start(rand::random::<u16>(), true);
+            builder.add_question("www.liquiddota.com", 
+                dns_parser::QueryType::A,
+                dns_parser::QueryClass::IN);
+            builder.finish()
+        };
+        let srvs = get_dns_servers();
+        println!("Sending {} {}", srvs[0], nsend);
+
+        let mut socket = ::std::net::UdpSocket::bind("0.0.0.0:0").expect("sock fails");
+        let ip = srvs[0].parse().unwrap();
+        let sockaddr = ::std::net::SocketAddrV4::new(ip, 53);
+
+        socket.send_to(&buf_send[..nsend], &sockaddr);
+        let mut buf2 = [0; 1000];
+        let (amt, src) = socket.recv_from(&mut buf2).expect("dns recv failed");
+        println!("Received {}", amt);
+        let packet = Packet::parse(&buf2[..amt]).unwrap();
+        for a in packet.answers {
+            match a.data {
+                RRData::A(ip) => {
+                    print!("IP: {} ", ip);
+                }
+                _ => {
+                    // Bad value. Log it?
+                }
+            }
+        }
+    }
 
     #[derive(Clone)]
     struct Param {
@@ -123,9 +195,8 @@ mod tests {
         let client_sock = TcpStream::from_stream(::std::net::TcpStream::connect(addr.clone()).unwrap()).unwrap();
         // Join our fiber to it. This way we can receive its output.
         fiber.join_tcp(client_sock, get_http, p1);
-        println!("Returning ({}ms,{}ms): {}{}", 
+        println!("Returning ({}ms): {}{}", 
             a.elapsed().subsec_nanos() / 1000000, 
-            b.elapsed().subsec_nanos() / 1000000,
             if port == 443 { "https://" } else { "http://" },  addr);
 
         // Fibers can stream response to parent. So we iterate on responses.
@@ -160,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn it_works() {
+    fn http_proxy() {
         println!("Starting random http proxy. To query call: curl \"http://127.0.0.1:10000\"");
         // First time calling random requires a large stack, we must initialize it on main stack!
         rand::random::<u8>();

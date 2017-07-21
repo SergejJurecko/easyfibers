@@ -2,7 +2,7 @@ use std::io;
 use runner::runner;
 use std::io::{Read,Write};
 use std::net::SocketAddr;
-use context::{Context, Transfer};
+use context::{Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use mio::net::{TcpStream,UdpSocket,TcpListener};
 use mio::event::Evented;
@@ -126,7 +126,7 @@ impl<P,R> Fiber<P,R> {
     /// Call main stack.
     ///
     /// This function blocks until main stack produces response.
-    pub fn join_main(&self, param: P) -> R {
+    pub fn join_main(&self) -> R {
         runner::<P,R>().join_main(self.id)
     }
 
@@ -311,7 +311,7 @@ impl Read for FiberSock {
         match *self {
             FiberSock::Tcp(ref mut tcp) => tcp.read(buf),
             FiberSock::Udp(ref mut udp) => udp.recv(buf),
-            FiberSock::Listener(ref tcp) => 
+            FiberSock::Listener(_) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not read on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.read(buf),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
@@ -324,7 +324,7 @@ impl Write for FiberSock {
         match *self {
             FiberSock::Tcp(ref mut tcp) => tcp.write(buf),
             FiberSock::Udp(ref mut udp) => udp.send(buf),
-            FiberSock::Listener(ref tcp) => 
+            FiberSock::Listener(_) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not write on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.write(buf),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
@@ -334,8 +334,8 @@ impl Write for FiberSock {
     fn flush(&mut self) -> io::Result<()> {
         match *self {
             FiberSock::Tcp(ref mut tcp) => tcp.flush(),
-            FiberSock::Udp(ref mut udp) => Ok(()),
-            FiberSock::Listener(ref tcp) => 
+            FiberSock::Udp(_) => Ok(()),
+            FiberSock::Listener(_) => 
                 Err(io::Error::new(io::ErrorKind::InvalidInput,"can not flush on listen socket")),
             FiberSock::Tls(ref mut tcp) => tcp.flush(),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),

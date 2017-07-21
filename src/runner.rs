@@ -1,7 +1,6 @@
-use mio::{Events, Poll, PollOpt, Ready, Token};
+use mio::{Events, Poll, Ready};
 use mio::net::{TcpStream,UdpSocket,TcpListener};
 use std::net::SocketAddr;
-use mio::event::Evented;
 use context::{Context, Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use std::collections::VecDeque;
