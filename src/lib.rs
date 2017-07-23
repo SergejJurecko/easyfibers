@@ -8,11 +8,16 @@ extern crate slab;
 extern crate native_tls;
 extern crate rand;
 extern crate byteorder;
+extern crate libc;
 #[macro_use(quick_error)]
 extern crate quick_error;
 #[cfg(test)]
 #[macro_use]
 extern crate matches;
+#[cfg(target_os = "macos")]
+extern crate core_foundation;
+#[cfg(target_os = "macos")]
+extern crate core_foundation_sys;
 
 mod fiber;
 mod runner;
@@ -22,10 +27,32 @@ mod wheel;
 mod builder;
 #[allow(dead_code)]
 mod dns_parser;
+#[allow(dead_code)]
+#[allow(non_upper_case_globals)]
+#[allow(unused_variables)]
+#[allow(unused_imports)]
+#[allow(non_snake_case)]
 mod dns;
 
 pub use runner::Poller;
 pub use fiber::{Fiber, FiberFn, FiberRef};
+
+// use std::sync::mpsc::Sender;
+// pub(crate) enum ThreadCmd {
+//     Lookup(String),
+// }
+// pub(crate) enum ThreadCmdResp {
+//     Lookup(String),
+//     Error,
+// }
+// pub(crate) struct ThreadMsg {
+//     id: usize,
+//     // Command data
+//     cmd: Option<ThreadCmd>,
+//     resp: Option<ThreadCmdResp>,
+//     // Where to send result
+//     tx: Sender<ThreadMsg>,
+// }
 
 #[cfg(test)]
 mod tests {
@@ -37,44 +64,58 @@ mod tests {
     use std::io;
     use std::str;
     use native_tls::{TlsConnector};
+    use dns::Dns;
 
-    use dns;
-    use dns_parser;
-    use dns_parser::{Packet,RRData};
     #[test]
-    fn dnsq() {
-        let mut buf_send = [0; 512];
-        let nsend = {
-            let mut builder = dns_parser::Builder::new(&mut buf_send[..]);
-            builder.start(rand::random::<u16>(), true);
-            builder.add_question("www.liquiddota.com", 
-                dns_parser::QueryType::A,
-                dns_parser::QueryClass::IN);
-            builder.finish()
-        };
-        let srvs = dns::get_dns_servers();
-        println!("Sending {} {}", srvs[0], nsend);
-
-        let mut socket = ::std::net::UdpSocket::bind("0.0.0.0:0").expect("sock fails");
-        let ip = srvs[0].parse().unwrap();
-        let sockaddr = ::std::net::SocketAddrV4::new(ip, 53);
-
-        socket.send_to(&buf_send[..nsend], &sockaddr);
-        let mut buf2 = [0; 1000];
-        let (amt, src) = socket.recv_from(&mut buf2).expect("dns recv failed");
-        println!("Received {}", amt);
-        let packet = Packet::parse(&buf2[..amt]).unwrap();
-        for a in packet.answers {
-            match a.data {
-                RRData::A(ip) => {
-                    print!("IP: {} ", ip);
-                }
-                _ => {
-                    // Bad value. Log it?
-                }
+    fn nativedns() {
+        let dns = Dns::new();
+        ::std::thread::sleep(Duration::from_millis(200));
+        dns.start_lookup(100, "www.liquiddota.com").unwrap();
+        loop {
+            if let Some((id,ip)) = dns.check_result() {
+                println!("Have result {} {}", id, ip);
+                break;
             }
         }
     }
+
+    // use dns;
+    // use dns_parser;
+    // use dns_parser::{Packet,RRData};
+    // #[test]
+    // fn dnsq() {
+    //     let mut buf_send = [0; 512];
+    //     let nsend = {
+    //         let mut builder = dns_parser::Builder::new(&mut buf_send[..]);
+    //         builder.start(rand::random::<u16>(), true);
+    //         builder.add_question("www.liquiddota.com", 
+    //             dns_parser::QueryType::A,
+    //             dns_parser::QueryClass::IN);
+    //         builder.finish()
+    //     };
+    //     let srvs = dns::get_dns_servers();
+    //     println!("Sending {} {}", srvs[0], nsend);
+
+    //     let mut socket = ::std::net::UdpSocket::bind("0.0.0.0:0").expect("sock fails");
+    //     let ip = srvs[0].parse().unwrap();
+    //     let sockaddr = ::std::net::SocketAddrV4::new(ip, 53);
+
+    //     socket.send_to(&buf_send[..nsend], &sockaddr);
+    //     let mut buf2 = [0; 1000];
+    //     let (amt, src) = socket.recv_from(&mut buf2).expect("dns recv failed");
+    //     println!("Received {}", amt);
+    //     let packet = Packet::parse(&buf2[..amt]).unwrap();
+    //     for a in packet.answers {
+    //         match a.data {
+    //             RRData::A(ip) => {
+    //                 print!("IP: {} ", ip);
+    //             }
+    //             _ => {
+    //                 // Bad value. Log it?
+    //             }
+    //         }
+    //     }
+    // }
 
     #[derive(Clone)]
     struct Param {

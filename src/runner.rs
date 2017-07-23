@@ -117,11 +117,14 @@ pub(crate) struct RunnerInt<P,R> {
     results: VecDeque<R>,
     wheel: Wheel,
     stack_size: Option<usize>,
-    dns_servers: Vec<String>,
+    // tx: Sender<super::ThreadMsg>,
+    // rx: Receiver<super::ThreadMsg>,
+    // dns_servers: Vec<String>,
 }
 
 impl<P,R> RunnerInt<P,R> {
     fn new(stack_size: Option<usize>) -> io::Result<RunnerInt<P,R>> {
+        // let (tx,rx) = channel();
         Ok(RunnerInt {
             stack_size,
             poll: Poll::new().expect("unable to start poller"),
@@ -133,7 +136,9 @@ impl<P,R> RunnerInt<P,R> {
             tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
             wheel: Wheel::new(&Builder::new().tick_duration(Duration::from_millis(250))),
-            dns_servers: dns::get_dns_servers(),
+            // tx,
+            // rx,
+            // dns_servers: dns::get_dns_servers(),
         })
     }
 
