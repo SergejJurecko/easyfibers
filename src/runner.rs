@@ -117,9 +117,6 @@ pub(crate) struct RunnerInt<P,R> {
     results: VecDeque<R>,
     wheel: Wheel,
     stack_size: Option<usize>,
-    // tx: Sender<super::ThreadMsg>,
-    // rx: Receiver<super::ThreadMsg>,
-    // dns_servers: Vec<String>,
 }
 
 impl<P,R> RunnerInt<P,R> {
@@ -136,9 +133,6 @@ impl<P,R> RunnerInt<P,R> {
             tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
             wheel: Wheel::new(&Builder::new().tick_duration(Duration::from_millis(250))),
-            // tx,
-            // rx,
-            // dns_servers: dns::get_dns_servers(),
         })
     }
 

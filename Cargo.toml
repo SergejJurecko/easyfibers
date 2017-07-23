@@ -10,11 +10,6 @@ keywords = ["fibers", "coroutine", "mio", "context", "async"]
 categories = ["network-programming", "concurrency"]
 license = "MIT/Apache-2.0"
 
-
-# [lib]
-# name = "easyfibers"
-# crate-type = ["staticlib","cdylib"]
-
 [dependencies]
 mio = "0.6"
 context = "2"

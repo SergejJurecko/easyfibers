@@ -38,7 +38,7 @@ mod implemented {
     use core_foundation::runloop::CFRunLoop;
     use std::sync::mpsc::{Sender,Receiver,channel};
     use std::cell::RefCell;
-    use std::net::UdpSocket;
+    use std::net::{UdpSocket,IpAddr,Ipv4Addr,Ipv6Addr};
 
     unsafe impl Send for ThreadResp {}
 
@@ -49,7 +49,7 @@ mod implemented {
     struct ThreadMsg {
         id: usize,
         host: *mut String,
-        resp: *mut String,
+        resp: ::std::net::IpAddr,
     }
 
     impl Default for ThreadMsg {
@@ -57,7 +57,7 @@ mod implemented {
             ThreadMsg {
                 id: 0,
                 host: ptr::null_mut(),
-                resp: ptr::null_mut(),
+                resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
             }
         }
     }
@@ -86,13 +86,16 @@ mod implemented {
             }
         }
 
-        pub fn check_result(&self) -> Option<(usize,Box<String>)> {
+        pub fn check_result(&self) -> Option<(usize,IpAddr)> {
             match self.rx.try_recv() {
                 Ok(r) => {
                     unsafe {
                         let req = Box::from_raw(r.resp as *mut ThreadMsg);
-                        let ip = Box::from_raw(req.resp);
-                        Some((req.id, ip))
+                        if req.resp != IpAddr::V4(Ipv4Addr::new(0,0,0,0)) {
+                            Some((req.id, req.resp))
+                        } else {
+                            None
+                        }
                     }
                 }
                 _ => {
@@ -113,7 +116,7 @@ mod implemented {
                     let msg = ThreadMsg {
                         id,
                         host: Box::into_raw(Box::new(host.to_string())) as *mut String,
-                        resp: ptr::null_mut(),
+                        resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
                     };
                     let msgp = mem::transmute::<&ThreadMsg, *const u8>(&msg);
                     let data_ref = CFDataCreate(kCFAllocatorDefault, msgp, mem::size_of::<ThreadMsg>() as i64);
@@ -164,7 +167,7 @@ mod implemented {
         let msg = Box::new(ThreadMsg {
             id,
             host: ptr::null_mut(),
-            resp: ptr::null_mut(),
+            resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
         });
         if let Ok(host) = CFString::from_str(host.as_str()) {
             let host = CFHostCreateWithName(kCFAllocatorDefault, host.as_concrete_TypeRef());
@@ -219,7 +222,6 @@ mod implemented {
     unsafe extern fn resolv_cb(host: CFHostRef, typeInfo: i32, error: *const CFStreamError, info: *mut c_void) {
         let mut req:Box<ThreadMsg> = Box::from_raw(info as *mut ThreadMsg);
         println!("resolv cb {}",req.id);
-        let mut resp = ptr::null_mut();
         if (*error).error == 0 {
             let mut succ = 0;
             let array = CFArray::wrap_under_get_rule(CFHostGetAddressing(host, &mut succ));
@@ -230,18 +232,21 @@ mod implemented {
                         AF_INET => {
                             let in_addr = addr as *const sockaddr_in;
                             let l = (*in_addr).sin_addr.s_addr;
-                            resp = Box::into_raw(Box::new(format!("{}.{}.{}.{}",
-                                l & 255, (l >> 8) & 255,(l >> 16) & 255, l >> 24)));
-                            // println!("afinet! {}.{}.{}.{}", l >> 24, (l >> 16) & 255, (l >> 8) & 255, l & 255);
+                            req.resp = IpAddr::V4(Ipv4Addr::new((l & 255) as u8,
+                                ((l >> 8) & 255) as u8,
+                                ((l >> 16) & 255) as u8,
+                                (l >> 24) as u8));
                         }
                         AF_INET6 => {
+                            let in_addr = addr as *const sockaddr_in6;
+                            let l = (*in_addr).sin6_addr;
+                            req.resp = IpAddr::V6(Ipv6Addr::from(l.s6_addr));
                         }
                         _ => {}
                     }
                 }
             }
         }
-        req.resp = resp;
         TX.with(|tx|{
             let tx = (*tx).borrow();
             if let Some(ref t) = *tx {
@@ -329,36 +334,37 @@ mod implemented {
         }
         out
     }
+
+    #[cfg(target_os = "macos")]
+    pub fn get_dns_servers() -> Vec<String> {
+        let out = ::std::process::Command::new("scutil")
+            .arg("--dns")
+            .output();
+        if let Ok(out) = out {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                return scutil_parse(s);
+            }
+        }
+        get_google()
+    }
+    fn scutil_parse(s: String) -> Vec<String> {
+        let mut out = Vec::with_capacity(2);
+        for line in s.lines() {
+            let mut words = line.split_whitespace();
+            if let Some(s) = words.next() {
+                if s.starts_with("nameserver[") {
+                    if let Some(s) = words.next() {
+                        if s == ":" {
+                            if let Some(s) = words.next() {
+                                out.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
-// #[cfg(target_os = "macos")]
-// pub fn get_dns_servers() -> Vec<String> {
-//     let out = ::std::process::Command::new("scutil")
-//         .arg("--dns")
-//         .output();
-//     if let Ok(out) = out {
-//         if let Ok(s) = String::from_utf8(out.stdout) {
-//             return scutil_parse(s);
-//         }
-//     }
-//     get_google()
-// }
-// fn scutil_parse(s: String) -> Vec<String> {
-//     let mut out = Vec::with_capacity(2);
-//     for line in s.lines() {
-//         let mut words = line.split_whitespace();
-//         if let Some(s) = words.next() {
-//             if s.starts_with("nameserver[") {
-//                 if let Some(s) = words.next() {
-//                     if s == ":" {
-//                         if let Some(s) = words.next() {
-//                             out.push(s.to_string());
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     out
-// }
 
