@@ -1,8 +1,9 @@
-# 0.6.1 ??
+# 0.6.1 (Jul 25, 2017)
 
 * SSL/TLS support using Fiber::tcp_tls_connect and Fiber::tcp_tls_accept
 * Fiber::hibernate_for_read function for keep-alive scenarios. Once socket has data to read or is closed, fiber function will be called on it from beginning. While in hibernation stack is reused for other fibers.
 * Poller::new_timer and Poller::new_fiber_timer for running time based tasks or fibers.
+* new_resolve_connect, join_resolve_connect to asynchronously lookup DNS and connect to host.
 
 # 0.6.0 (Jul 18, 2017)
 

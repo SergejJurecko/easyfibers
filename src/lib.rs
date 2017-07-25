@@ -132,10 +132,6 @@ mod tests {
             panic!("")
         };
         let a = Instant::now();
-        // Start connection to host
-        // let client_sock = TcpStream::from_stream(::std::net::TcpStream::connect(addr.clone()).unwrap()).unwrap();
-        // Join our fiber to it. This way we can receive its output.
-        // fiber.join_tcp(client_sock, get_http, p1);
         fiber.join_resolve_connect(addr.as_str(), SocketType::Tcp, port, Duration::from_millis(3000), get_http, p1).unwrap();
         println!("Returning: {}{}", if port == 443 { "https://" } else { "http://" },  addr);
 
