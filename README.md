@@ -50,7 +50,11 @@ Uses 3 types of fibers:
 
 - TcpStream server that receives request and spawns a http client fiber.
 
-- TcpStream client that creates a request to external service and streams response back to parent fiber.
+- TcpStream client with two roles:
+
+    * creates a request to external service and streams response back to parent fiber.
+
+    * request from main stack that calls our proxy
 
 Run the bottom example from one terminal:
 
@@ -58,11 +62,6 @@ Run the bottom example from one terminal:
 cargo test -- --nocapture
 ```
 
-And call it from another:
-
-```
-curl "http://127.0.0.1:10000"
-```
 
 ```rust
 extern crate easyfibers;
