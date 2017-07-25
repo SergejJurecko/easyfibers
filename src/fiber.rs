@@ -263,10 +263,13 @@ pub(crate) struct ConnectParam {
 
 pub(crate) struct FiberInt<P,R> {
     pub(crate) ready: Ready,
-    // pub(crate) blocking_on: Ready,
     pub(crate) param: Option<P>,
     pub(crate) state: FiberState,
     pub(crate) me: usize,
+    // Fiber slots get reused, this is to keep track of how many times
+    // fiber has been reused. Useful if this ID gets sent someplace outside
+    // (like DNS resolver) and we don't know when we get response.
+    pub(crate) generation: usize,
     pub(crate) func: Option<FiberFn<P,R>>,
     // pub(crate) resolv_func: Option<FiberResolvedFn<P,R>>,
     pub(crate) connect_param: Option<ConnectParam>,

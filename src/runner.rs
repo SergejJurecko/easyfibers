@@ -349,6 +349,9 @@ impl<P,R> RunnerInt<P,R> {
             port: u16, 
             param: P) -> io::Result<usize> {
 
+        if domain.len() == 0 {
+            return Err(io::Error::new(io::ErrorKind::Other, "empty domain"));
+        }
         let pos = self.register(func, FiberSock::Empty, Some(param), parent)?;
         let mut cp = ConnectParam {
             port,
@@ -367,7 +370,7 @@ impl<P,R> RunnerInt<P,R> {
             timeout_ticks = 255;
         }
         self.fibers[pos].timed_out = timeout_ticks as u8;
-        match self.dns.start_lookup(pos, domain) {
+        match self.dns.start_lookup(pos, self.fibers[pos].generation, domain) {
             Ok(None) => {
                 self.fibers[pos].connect_param = Some(cp);
                 return Ok(pos);
@@ -399,6 +402,7 @@ impl<P,R> RunnerInt<P,R> {
             ready: Ready::empty(),
             param,
             me: 0,
+            generation: 0,
             state: FiberState::Unstacked,
             func,
             // resolv_func: None,
@@ -415,7 +419,9 @@ impl<P,R> RunnerInt<P,R> {
         };
         let pos = match self.free_fibers.pop_front() {
             Some(free_pos) => {
+                let gen = self.fibers[free_pos].generation;
                 fiber.me = free_pos;
+                fiber.generation = gen+1;
                 if let FiberSock::Listener(_) = fiber.sock {
                     fiber.register(&self.poll, Ready::readable())?;
                 }
@@ -664,15 +670,18 @@ impl<P,R> RunnerInt<P,R> {
             return self.signaled();
         }
 
-        while let Some((pos,adr)) = self.dns.check_result() {
+        while let Some((pos,gen,addr)) = self.dns.check_result() {
             {
                 let fiber = &mut self.fibers[pos];
+                if fiber.generation != gen {
+                    continue;
+                }
                 if let Some(tk) = fiber.wtoken {
                     self.wheel.cancel(tk);
                     fiber.wtoken = None;
                 }
             }
-            self.have_addr(pos, adr);
+            self.have_addr(pos, addr);
         }
 
         if self.events.len() > 0 {
@@ -711,7 +720,7 @@ impl<P,R> RunnerInt<P,R> {
                         // When using our dns client, we have a UDP socket for it.
                         if let &FiberSock::Udp(ref udp) = &fiber.sock {
                             if let Some(ref cp) = fiber.connect_param {
-                                self.dns.lookup_on(udp, 
+                                let _ = self.dns.lookup_on(udp, 
                                     fiber.timed_out as usize,
                                     cp.host.as_str());
                                 if let Some(tk) = self.wheel.reserve() {

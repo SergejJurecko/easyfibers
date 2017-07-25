@@ -1,3 +1,7 @@
+# 0.6.2 (Jul 25, 2017)
+
+* Bugfix for macOS DNS lookup if it times out and cleanup of DNS thread.
+
 # 0.6.1 (Jul 25, 2017)
 
 * SSL/TLS support using Fiber::tcp_tls_connect and Fiber::tcp_tls_accept

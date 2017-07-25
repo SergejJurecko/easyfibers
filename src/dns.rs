@@ -1,6 +1,5 @@
 pub(crate) use self::implemented::Dns;
 
-use ::dns_parser;
 use ::dns_parser::{Packet,RRData};
 use std::net::IpAddr;
 
@@ -25,7 +24,7 @@ pub(crate) fn dns_parse(buf:&[u8]) -> Option<IpAddr> {
 mod implemented {
     use std::io;
     use std::thread::{JoinHandle,spawn};
-    use libc::{c_void, c_uint, c_long};
+    use libc::{c_void, c_long};
     use libc::{AF_INET, AF_INET6, sockaddr, sockaddr_in, sockaddr_in6}; //,getnameinfo,NI_NUMERICHOST
     use core_foundation_sys::base::{CFAllocatorRef, kCFAllocatorDefault, CFRelease};
     use core_foundation_sys::messageport::*;
@@ -54,6 +53,7 @@ mod implemented {
 
     struct ThreadMsg {
         id: usize,
+        gen: usize,
         host: *mut String,
         resp: ::std::net::IpAddr,
     }
@@ -62,6 +62,7 @@ mod implemented {
         fn default() -> ThreadMsg {
             ThreadMsg {
                 id: 0,
+                gen: 0,
                 host: ptr::null_mut(),
                 resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
             }
@@ -76,6 +77,13 @@ mod implemented {
         tx: Sender<ThreadResp>,
         rx: Receiver<ThreadResp>,
         thr: JoinHandle<()>,
+    }
+
+    impl Drop for Dns {
+        fn drop(&mut self) {
+            // empty host will cause dns thread to close
+            let _ = self.start_lookup(0,0,"");
+        }
     }
 
     impl Dns {
@@ -96,13 +104,13 @@ mod implemented {
             Ok(())
         }
 
-        pub fn check_result(&self) -> Option<(usize,IpAddr)> {
+        pub fn check_result(&self) -> Option<(usize,usize,IpAddr)> {
             match self.rx.try_recv() {
                 Ok(r) => {
                     unsafe {
                         let req = Box::from_raw(r.resp as *mut ThreadMsg);
                         if req.resp != IpAddr::V4(Ipv4Addr::new(0,0,0,0)) {
-                            Some((req.id, req.resp))
+                            Some((req.id, req.gen, req.resp))
                         } else {
                             None
                         }
@@ -114,7 +122,7 @@ mod implemented {
             }
         }
 
-        pub fn start_lookup(&self, id: usize, host: &str) -> io::Result<Option<UdpSocket>> {
+        pub fn start_lookup(&self, id: usize, gen: usize, host: &str) -> io::Result<Option<UdpSocket>> {
             unsafe {
                 if let Ok(name) = CFString::from_str("com.easyfibers.dns") {
                     let port_ref = CFMessagePortCreateRemote(kCFAllocatorDefault, name.as_concrete_TypeRef());
@@ -125,6 +133,7 @@ mod implemented {
                     // This copy will then be returned on receive.
                     let msg = ThreadMsg {
                         id,
+                        gen,
                         host: Box::into_raw(Box::new(host.to_string())) as *mut String,
                         resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
                     };
@@ -173,10 +182,15 @@ mod implemented {
                      data: CFDataRef, info: *mut c_void) -> CFDataRef {
         let msg = ::std::mem::transmute::<*const u8, &mut ThreadMsg>(CFDataGetBytePtr(data));
         let host = Box::from_raw(msg.host);
+        if host.len() == 0 {
+            CFRunLoop::get_current().stop();
+            return ptr::null();
+        }
         let id = msg.id;
         // CFRelease(data as *const c_void);
         let msg = Box::new(ThreadMsg {
             id,
+            gen: msg.gen,
             host: ptr::null_mut(),
             resp: IpAddr::V4(Ipv4Addr::new(0,0,0,0)),
         });
@@ -217,8 +231,8 @@ mod implemented {
         version: i32,
     }
     pub const kCFHostAddresses:i32 = 0;
-    pub const kCFHostNames:i32 = 1;
-    pub const kCFHostReachability:i32 = 2;
+    // pub const kCFHostNames:i32 = 1;
+    // pub const kCFHostReachability:i32 = 2;
     type CFHostClientCallBack = unsafe extern fn(theHost: CFHostRef, typeInfo: i32, error: *const CFStreamError, info: *mut c_void);
 
     extern "C" {
@@ -243,6 +257,7 @@ mod implemented {
                             let in_addr = addr as *const sockaddr_in;
                             let l = (*in_addr).sin_addr.s_addr;
                             req.resp = IpAddr::V4(Ipv4Addr::from(u32::from_be(l)));
+                            break;
                         }
                         AF_INET6 => {
                             let in_addr = addr as *const sockaddr_in6;
@@ -323,7 +338,7 @@ mod implemented {
             Ok(s6)
         }
 
-        pub fn start_lookup(&self, id: usize, host: &str) -> io::Result<Option<UdpSocket>> {
+        pub fn start_lookup(&self, id: usize, _:usize, host: &str) -> io::Result<Option<UdpSocket>> {
             if let Ok(sock) = self.get_socket_v4() {
                 if let Ok(_) = self.lookup_on(&sock, 0, host) {
                     return Ok(Some(sock))
@@ -361,7 +376,7 @@ mod implemented {
             Err(last_err)
         }
 
-        pub fn check_result(&self) -> Option<(usize,IpAddr)> {
+        pub fn check_result(&self) -> Option<(usize,usize,IpAddr)> {
             None
         }
     }
