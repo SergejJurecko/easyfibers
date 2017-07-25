@@ -75,7 +75,6 @@ use std::io;
 use std::net::{SocketAddr,Ipv4Addr,IpAddr};
 use std::str;
 use native_tls::{TlsConnector};
-use dns::Dns;
 
 #[derive(Clone)]
 struct Param {
