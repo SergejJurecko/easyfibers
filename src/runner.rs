@@ -623,6 +623,7 @@ impl<P,R> RunnerInt<P,R> {
         {
             let fiber = &mut self.fibers[pos];
             fiber.sock = FiberSock::Empty;
+            fiber.ready = Ready::empty();
             fiber.timed_out = 0;
             let mut cp = None;
             swap(&mut fiber.connect_param, &mut cp);
