@@ -35,24 +35,7 @@ mod dns_parser;
 mod dns;
 
 pub use runner::Poller;
-pub use fiber::{Fiber, FiberFn, FiberRef};
-
-// use std::sync::mpsc::Sender;
-// pub(crate) enum ThreadCmd {
-//     Lookup(String),
-// }
-// pub(crate) enum ThreadCmdResp {
-//     Lookup(String),
-//     Error,
-// }
-// pub(crate) struct ThreadMsg {
-//     id: usize,
-//     // Command data
-//     cmd: Option<ThreadCmd>,
-//     resp: Option<ThreadCmdResp>,
-//     // Where to send result
-//     tx: Sender<ThreadMsg>,
-// }
+pub use fiber::{Fiber, FiberFn, FiberRef, SocketType};
 
 #[cfg(test)]
 mod tests {
@@ -62,60 +45,10 @@ mod tests {
     use std::io::{Write,Read};
     use std::time::{Duration,Instant};
     use std::io;
+    use std::net::{SocketAddr,Ipv4Addr,IpAddr};
     use std::str;
     use native_tls::{TlsConnector};
     use dns::Dns;
-
-    #[test]
-    fn nativedns() {
-        let dns = Dns::new();
-        ::std::thread::sleep(Duration::from_millis(200));
-        dns.start_lookup(100, "www.liquiddota.com").unwrap();
-        loop {
-            if let Some((id,ip)) = dns.check_result() {
-                println!("Have result {} {}", id, ip);
-                break;
-            }
-        }
-    }
-
-    // use dns;
-    // use dns_parser;
-    // use dns_parser::{Packet,RRData};
-    // #[test]
-    // fn dnsq() {
-    //     let mut buf_send = [0; 512];
-    //     let nsend = {
-    //         let mut builder = dns_parser::Builder::new(&mut buf_send[..]);
-    //         builder.start(rand::random::<u16>(), true);
-    //         builder.add_question("www.liquiddota.com", 
-    //             dns_parser::QueryType::A,
-    //             dns_parser::QueryClass::IN);
-    //         builder.finish()
-    //     };
-    //     let srvs = dns::get_dns_servers();
-    //     println!("Sending {} {}", srvs[0], nsend);
-
-    //     let mut socket = ::std::net::UdpSocket::bind("0.0.0.0:0").expect("sock fails");
-    //     let ip = srvs[0].parse().unwrap();
-    //     let sockaddr = ::std::net::SocketAddrV4::new(ip, 53);
-
-    //     socket.send_to(&buf_send[..nsend], &sockaddr);
-    //     let mut buf2 = [0; 1000];
-    //     let (amt, src) = socket.recv_from(&mut buf2).expect("dns recv failed");
-    //     println!("Received {}", amt);
-    //     let packet = Packet::parse(&buf2[..amt]).unwrap();
-    //     for a in packet.answers {
-    //         match a.data {
-    //             RRData::A(ip) => {
-    //                 print!("IP: {} ", ip);
-    //             }
-    //             _ => {
-    //                 // Bad value. Log it?
-    //             }
-    //         }
-    //     }
-    // }
 
     #[derive(Clone)]
     struct Param {
@@ -138,8 +71,6 @@ mod tests {
         // We will read in 500B chunks
         let mut v = [0u8;2000];
         let host = p.chosen.unwrap();
-
-        println!("get_http {}", host);
 
         let timeout = if p.is_https {
             let connector = TlsConnector::builder().unwrap().build().unwrap();
@@ -177,8 +108,7 @@ mod tests {
         // Pick a random host from our list.
         let chosen = rand::random::<usize>() % p.http_hosts.len();
         // Pick http or https.
-        //let port = if rand::random::<u8>() % 2 == 0 { 80 } else { 443 };
-        let port = 80;
+        let port = if rand::random::<u8>() % 2 == 0 { 80 } else { 443 };
         let p1 = if port == 443 {
             Param {
                 chosen: Some(p.https_hosts[chosen].clone()),
@@ -197,18 +127,17 @@ mod tests {
             }
         };
         let addr = if let &Some(ref ch) = &p1.chosen {
-             ch.clone() + ":" + port.to_string().as_str()
+             ch.clone()
         } else {
             panic!("")
         };
         let a = Instant::now();
         // Start connection to host
-        let client_sock = TcpStream::from_stream(::std::net::TcpStream::connect(addr.clone()).unwrap()).unwrap();
+        // let client_sock = TcpStream::from_stream(::std::net::TcpStream::connect(addr.clone()).unwrap()).unwrap();
         // Join our fiber to it. This way we can receive its output.
-        fiber.join_tcp(client_sock, get_http, p1);
-        println!("Returning ({}ms): {}{}", 
-            a.elapsed().subsec_nanos() / 1000000, 
-            if port == 443 { "https://" } else { "http://" },  addr);
+        // fiber.join_tcp(client_sock, get_http, p1);
+        fiber.join_resolve_connect(addr.as_str(), SocketType::Tcp, port, Duration::from_millis(3000), get_http, p1).unwrap();
+        println!("Returning: {}{}", if port == 443 { "https://" } else { "http://" },  addr);
 
         // Fibers can stream response to parent. So we iterate on responses.
         // We could also create multiple children and iterate on all of them.
@@ -272,7 +201,8 @@ mod tests {
                 http_hosts: Vec::new(),
                 https_hosts: Vec::new(),
             };
-            let client_sock = TcpStream::from_stream(::std::net::TcpStream::connect("127.0.0.1:10000").unwrap()).unwrap();
+            let addr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
+            let client_sock = TcpStream::connect(&SocketAddr::new(addr, 10000)).unwrap();
             poll.new_tcp(client_sock, get_http, p);
         }
         while reqs_remain > 0 {

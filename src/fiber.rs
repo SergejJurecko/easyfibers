@@ -1,7 +1,7 @@
-use std::io;
 use runner::runner;
+use std::io;
 use std::io::{Read,Write};
-use std::net::SocketAddr;
+use std::net::{SocketAddr};
 use context::{Transfer};
 use context::stack::ProtectedFixedSizeStack;
 use mio::net::{TcpStream,UdpSocket,TcpListener};
@@ -12,7 +12,6 @@ use wheel::Token as WToken;
 use std::time::Duration;
 use std::collections::VecDeque;
 use native_tls::{TlsStream, TlsConnector, TlsAcceptor, MidHandshakeTlsStream};
-
 /// Fiber execute function. It receives current fiber, parameter that was used
 /// to start the fiber and returns result that will be result of fiber.
 ///
@@ -23,6 +22,9 @@ use native_tls::{TlsStream, TlsConnector, TlsAcceptor, MidHandshakeTlsStream};
 ///
 /// You must test your code for any possible SIGBUS situations and be careful with calling external crates.
 pub type FiberFn<P,R> = fn(Fiber<P,R>,P) -> Option<R>;
+
+// /// Fiber execute function for DNS lookups.
+// pub type FiberResolvedFn<P,R> = fn(Fiber<P,R>, io::Result<IpAddr>, P) -> Option<R>;
 
 /// Available within the fiber execute function to configure fiber or create child fibers. Child fibers
 /// return results to parent fibers instead of poller on main stack.
@@ -95,32 +97,49 @@ impl<P,R> Fiber<P,R> {
         runner().register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
     }
 
+    /// Resolve domain, connect and run fiber.
+    /// In case domain resolve or connect fails, fiber will still be run but all
+    /// socket operations will fail.
+    ///
+    /// This function does not block, host lookup starts immediately. There is no relationship
+    /// between calling and created fiber.
+    pub fn new_resolve_connect(&self, 
+            domain: &str,
+            st: SocketType,
+            port: u16,
+            timeout: Duration,
+            func: FiberFn<P,R>,
+            param: P) -> io::Result<()> {
+        runner::<P,R>().new_resolve(None, domain, Some(func),timeout, st, port, param).map(|_|{()})
+    }
+
     /// Start a child fiber with tcp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        match runner::<P,R>().register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)) {
-            Ok(_) => {
-                Ok(())
-            }
-            Err(e) => {
-                Err(e)
-            }
-        }
+        runner::<P,R>().register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)).map(|_|{()})
     }
 
     /// Start a child fiber with an udp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        match runner::<P,R>().register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)) {
-            Ok(_) => {
-                Ok(())
-            }
-            Err(e) => {
-                Err(e)
-            }
-        }
+        runner::<P,R>().register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)).map(|_|{()})
+    }
+    
+    /// Start a child fiber that resolves domain, connects and runs fiber.
+    /// In case domain resolve or connect fails, fiber will still be run but all
+    /// socket operations will fail.
+    ///
+    /// This function does not block, host lookup starts immediately.
+    pub fn join_resolve_connect(&self, 
+            domain: &str,
+            st: SocketType,
+            port: u16,
+            timeout: Duration,
+            func: FiberFn<P,R>,
+            param: P) -> io::Result<()> {
+        runner::<P,R>().new_resolve(Some(self.id), domain, Some(func),timeout, st, port, param).map(|_|{()})
     }
 
     /// Call main stack.
@@ -229,6 +248,19 @@ pub(crate) enum FiberState {
     Unstacked,
 }
 
+/// Socket type to connect to using new_resolve_connect function.
+/// For SSL/TLS use tcp first, then call tcp_tls_connect inside fiber.
+pub enum SocketType {
+    Tcp,
+    Udp(UdpSocket),
+}
+
+pub(crate) struct ConnectParam {
+    pub(crate) port: u16,
+    pub(crate) st: SocketType,
+    pub(crate) host: String,
+}
+
 pub(crate) struct FiberInt<P,R> {
     pub(crate) ready: Ready,
     // pub(crate) blocking_on: Ready,
@@ -236,6 +268,8 @@ pub(crate) struct FiberInt<P,R> {
     pub(crate) state: FiberState,
     pub(crate) me: usize,
     pub(crate) func: Option<FiberFn<P,R>>,
+    // pub(crate) resolv_func: Option<FiberResolvedFn<P,R>>,
+    pub(crate) connect_param: Option<ConnectParam>,
     pub(crate) sock: FiberSock,
     // Only when executing is stack and transfer here
     pub(crate) t: Option<Transfer>,
@@ -247,19 +281,19 @@ pub(crate) struct FiberInt<P,R> {
     pub(crate) result: Option<R>,
     pub(crate) wtoken: Option<WToken>,
     pub(crate) timeout: Option<Duration>,
-    pub(crate) timed_out: bool,
+    pub(crate) timed_out: u8,
 }
 
 impl<P,R> FiberInt<P,R> {
-    pub(crate) fn evented(&self) -> &Evented {
+    pub(crate) fn evented(&self) -> io::Result<&Evented> {
         self.sock.evented()
     }
 
     pub(crate) fn register(&mut self, poll: &Poll, rdy: Ready) -> io::Result<()> {
         let res = if self.ready.is_empty() {
-            poll.register(self.evented(), Token(self.me), rdy, PollOpt::edge())
+            poll.register(self.evented()?, Token(self.me), rdy, PollOpt::edge())
         } else {
-            poll.reregister(self.evented(), Token(self.me), rdy, PollOpt::edge())
+            poll.reregister(self.evented()?, Token(self.me), rdy, PollOpt::edge())
         };
         self.ready = rdy;
         res
@@ -284,13 +318,13 @@ impl FiberSock {
             _ => false,
         }
     }
-    pub fn evented(&self) -> &Evented {
+    pub fn evented(&self) -> io::Result<&Evented> {
         match self {
-            &FiberSock::Tcp(ref tcp) => tcp,
-            &FiberSock::Udp(ref udp) => udp,
-            &FiberSock::Listener(ref tcp) => tcp,
-            &FiberSock::TlsTemp(ref tcp) => tcp.get_ref(),
-            _ => panic!("Evented on an empty fiber"),
+            &FiberSock::Tcp(ref tcp) => Ok(tcp),
+            &FiberSock::Udp(ref udp) => Ok(udp),
+            &FiberSock::Listener(ref tcp) => Ok(tcp),
+            &FiberSock::TlsTemp(ref tcp) => Ok(tcp.get_ref()),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput,"no socket")),
         }
     }
 
