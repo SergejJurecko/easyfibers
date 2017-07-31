@@ -26,7 +26,7 @@ Is the risk worth it? I think so. Given the ease of use compared to other corout
 
 Heavy use of closures makes the code ugly, produces awful compile errors and makes it hard to integrate with the rest of your code.
 
-# [Documentation](https://docs.rs/easyfibers/0.6.2/easyfibers/)
+# [Documentation](https://docs.rs/easyfibers/0.7.0/easyfibers/)
 
 # TODO
 
@@ -69,11 +69,11 @@ extern crate rand;
 use easyfibers::*;
 use mio::net::{TcpStream,TcpListener};
 use std::io::{Write,Read};
-use std::time::{Duration,Instant};
-use std::io;
+use std::time::{Duration};
 use std::net::{SocketAddr,Ipv4Addr,IpAddr};
 use std::str;
 use native_tls::{TlsConnector};
+use std::io;
 
 #[derive(Clone)]
 struct Param {
@@ -97,13 +97,13 @@ fn get_http(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
     let mut v = [0u8;2000];
     let host = p.chosen.unwrap();
 
-    let timeout = if p.is_https {
+    if p.is_https {
         let connector = TlsConnector::builder().unwrap().build().unwrap();
-        fiber.tcp_tls_connect(connector, host.as_str());
+        fiber.tcp_tls_connect(connector, host.as_str()).unwrap();
         // https requires longer timeout
         fiber.socket_timeout(Some(Duration::from_millis(2000)));
     } else {
-        fiber.socket_timeout(Some(Duration::from_millis(2000)));
+        fiber.socket_timeout(Some(Duration::from_millis(1000)));
     };
 
     // We want to time out so use keep-alive
@@ -118,7 +118,7 @@ fn get_http(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
                 fiber.resp_chunk(Resp::Bytes(&v[0..sz]));
             }
             Err(e) => {
-                // assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+                assert_eq!(e.kind(), io::ErrorKind::TimedOut);
                 break;
             }
         }
@@ -156,7 +156,6 @@ fn rand_http_proxy(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
     } else {
         panic!("")
     };
-    let a = Instant::now();
     fiber.join_resolve_connect(addr.as_str(), SocketType::Tcp, port, Duration::from_millis(3000), get_http, p1).unwrap();
     println!("Returning: {}{}", if port == 443 { "https://" } else { "http://" },  addr);
 
@@ -174,13 +173,13 @@ fn rand_http_proxy(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
 }
 
 // Accept sockets in an endless loop.
-fn sock_acceptor(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
+fn sock_acceptor(fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
     loop {
         // If no sockets available, fiber will be scheduled out for execution until something connects. 
         match fiber.accept_tcp() {
             Ok((sock,_)) => {
                 // Create a new fiber on received socket. Use rand_http_proxy function to run it.
-                fiber.new_tcp(sock,rand_http_proxy, p.clone());
+                fiber.new_tcp(sock,rand_http_proxy, p.clone()).unwrap();
             }
             _ => {
                 println!("Listen socket error");
@@ -192,7 +191,6 @@ fn sock_acceptor(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
 }
 
 fn main() {
-    println!("Starting random http proxy. To query call: curl \"http://127.0.0.1:10000\"");
     // First time calling random requires a large stack, we must initialize it on main stack!
     rand::random::<u8>();
     let p = Param {
@@ -204,16 +202,20 @@ fn main() {
         https_hosts: vec!["www.reddit.com".to_string(), "www.google.com".to_string(),
             "arstechnica.com".to_string(), "news.ycombinator.com".to_string()],
     };
-    // Start our fiber poller.
+    // Start our poller.
     // Set this stack lower to see some SIGBUS action.
-    let poll:Poller<Param,Resp> = Poller::new(Some(4096*10)).unwrap();
+    let poller:Poller = Poller::new(Some(4096*10)).unwrap();
+    // Start runner with Param and Resp types.
+    let runner:Runner<Param,Resp> = Runner::new().unwrap();
     // Start a TCP listener socket
     let listener = TcpListener::bind(&"127.0.0.1:10000".parse().unwrap()).unwrap();
     // Create a fiber from it. Listener socket will use sock_acceptor function.
-    poll.new_listener(listener, sock_acceptor, p).unwrap();
-    // Poll for 3 requests before exiting.
+    runner.new_listener(listener, sock_acceptor, p).unwrap();
+    // Run 20 requests and exit.
     let mut reqs_remain = 20;
-    for i in 0..reqs_remain {
+    // Start requests. We can directly start a TcpStream because we are not resolving anything.
+    // Requests will call our own server.
+    for _ in 0..reqs_remain {
         let p = Param {
             chosen: Some("127.0.0.1:10000".to_string()),
             is_https: false,
@@ -223,22 +225,24 @@ fn main() {
         };
         let addr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
         let client_sock = TcpStream::connect(&SocketAddr::new(addr, 10000)).unwrap();
-        poll.new_tcp(client_sock, get_http, p);
+        runner.new_tcp(client_sock, get_http, p).unwrap();
     }
     while reqs_remain > 0 {
-        if poll.poll(Duration::from_millis(10)) {
-            while let Some(r) = poll.get_response() {
-                if Resp::Done == r {
-                    reqs_remain -= 1;
-                    println!("Finished executing, req_remain: {}", reqs_remain);
-                } else if let Resp::Bytes(slice) = r {
-                    println!("Main stack got {} bytes", slice.len());
-                }
+        if !poller.poll(Duration::from_millis(10)) {
+            continue;
+        }
+        if !runner.run() {
+            continue;
+        }
+        while let Some(r) = runner.get_response() {
+            if Resp::Done == r {
+                reqs_remain -= 1;
+                println!("Finished executing, req_remain: {}", reqs_remain);
+            } else if let Resp::Bytes(slice) = r {
+                println!("Main stack got {} bytes", slice.len());
             }
-
-            // we arent using 
-            while let Some(f) = poll.get_fiber() {
-            }
+        }
+        while let Some(_) = runner.get_fiber() {
         }
     }
     println!("poll out");
