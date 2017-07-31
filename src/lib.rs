@@ -1,6 +1,15 @@
 
 //! easyfibers is a closure-less couroutine library for executing asynchronous tasks as painlessly as possible. 
 //!
+//! The goal is to enable writing network protocols seamlessly and efficiently.
+//!
+//! easyfibers is organized into three levels:
+//! 
+//! * Poller that polls on sockets (mio), dns lookups and timers. Also holds unused execution stacks (context-rs).
+//! * Runners that get events from poller and runs fibers. 
+//! * Fibers that are executed by runners. Each fiber runs in its own stack and gets automatically scheduled out on 
+//! blocking operations like write/read.
+//!
 //! Code example at: https://github.com/SergejJurecko/easyfibers
 extern crate context;
 extern crate mio;
@@ -32,9 +41,12 @@ mod dns_parser;
 #[allow(unused_variables)]
 #[allow(non_snake_case)]
 mod dns;
+mod poller;
 
-pub use runner::Poller;
+pub use runner::Runner;
+pub use poller::Poller;
 pub use fiber::{Fiber, FiberFn, FiberRef, SocketType};
+
 
 #[cfg(test)]
 mod tests {

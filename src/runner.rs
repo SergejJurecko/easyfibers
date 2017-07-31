@@ -1,10 +1,9 @@
-use mio::{Events, Poll, Ready};
+use mio::{Ready};
 use mio::net::{TcpStream,UdpSocket,TcpListener};
 use std::net::{SocketAddr,IpAddr};
 use context::{Context, Transfer};
-use context::stack::ProtectedFixedSizeStack;
 use std::collections::VecDeque;
-use std::time::{Duration,Instant};
+use std::time::{Duration};
 use std::io;
 use std::mem::transmute;
 use std::io::{Read,Write};
@@ -13,31 +12,26 @@ use std::ptr;
 use std::os::raw::{c_void};
 use fiber::*;
 use std::marker::PhantomData;
-use wheel::Wheel;
-use builder::Builder;
 use native_tls::{TlsAcceptor, TlsStream, TlsConnector, HandshakeError};
-use dns::{Dns,dns_parse};
+use dns::{dns_parse};
+use poller::{self, poller};
 
-/// Poller that executes fibers on main stack.
-pub struct Poller<P,R> {
+/// Runner executes fibers on main stack. There can be multiple pollers each with its own fibers
+/// of a particular type.
+pub struct Runner<P,R> {
+    pos: i8,
     p: PhantomData<P>,
     r: PhantomData<R>,
 }
 
 type TlsResult = Result<TlsStream<TcpStream>,HandshakeError<TcpStream>>;
 
-impl<P,R> Poller<P,R> {
-    /// Start poller. This function does not block.
-    /// stack_size will be rounded up to next power of two.
-    /// If not set default value of context-rs will be used.
-    pub fn new(stack_size: Option<usize>) -> io::Result<Poller<P,R>> {
-        unsafe {
-            if get_runner() != ptr::null_mut() {
-                return Err(io::Error::new(io::ErrorKind::Other, "poller exists"));
-            }
-            start_runner::<P,R>(stack_size)?;
-        }
-        Ok(Poller {
+impl<P,R> Runner<P,R> {
+    /// Start runner. This function does not block.
+    pub fn new() -> io::Result<Runner<P,R>> {
+        let pos = start_runner::<P,R>()?;
+        Ok(Runner {
+            pos,
             p: PhantomData,
             r: PhantomData,
         })
@@ -49,19 +43,19 @@ impl<P,R> Poller<P,R> {
     /// Set wait to maximum amount of time poller should wait for sockets to wake up. This affects
     /// socket timers so do not set it too large. Recommended values between 0 (if you have
     /// something else to do) and 250.
-    pub fn poll(&self, wait: Duration) -> bool {
-        runner::<P,R>().poll(wait)
+    pub fn run(&self) -> bool {
+        runner::<P,R>(self.pos).run()
     }
 
     /// Get a response from fiber if any available.
     pub fn get_response(&self) -> Option<R> {
-        runner::<P,R>().iter_responses()
+        runner::<P,R>(self.pos).iter_responses()
     }
 
     /// Get a fiber if any that has called join_main and is blocking waiting for
     /// main stack to resume it.
     pub fn get_fiber(&self) -> Option<FiberRef<P,R>> {
-        runner::<P,R>().iter_fibers()
+        runner::<P,R>(self.pos).iter_fibers()
     }
 
     /// Resolve domain, connect and run fiber.
@@ -74,82 +68,71 @@ impl<P,R> Poller<P,R> {
             timeout: Duration,
             func: FiberFn<P,R>,
             param: P) -> io::Result<()> {
-        runner::<P,R>().new_resolve(None, domain, Some(func),timeout, st, port, param).map(|_|{()})
+        runner::<P,R>(self.pos).new_resolve(None, domain, Some(func),timeout, st, port, param).map(|_|{()})
     }
 
     /// Start fiber on TCP socket.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
     }
 
     /// Return resp after dur. Timer is one-shot.
     pub fn new_timer(&self, dur: Duration, resp: R) -> Option<TimerRef<P,R>> {
-        runner::<P,R>().new_timer(None, dur, None, Some(resp))
+        runner::<P,R>(self.pos).new_timer(None, dur, None, Some(resp))
     }
 
     /// Run socket-less fiber after dur.
     pub fn new_fiber_timer(&self, dur: Duration, func: FiberFn<P,R>, param: P) -> Option<TimerRef<P,R>> {
-        runner::<P,R>().new_timer(Some(func), dur, Some(param), None)
+        runner::<P,R>(self.pos).new_timer(Some(func), dur, Some(param), None)
     }
 }
 
-impl<P,R> Drop for Poller<P,R> {
+impl<P,R> Drop for Runner<P,R> {
     fn drop(&mut self) {
         unsafe {
-            Box::from_raw(runner::<P,R>());
-            set_runner(ptr::null_mut());
+            Box::from_raw(runner::<P,R>(self.pos));
+            set_runner(self.pos, ptr::null_mut());
         };
     }
 }
 
+// pub(crate) trait PolledRunner {
+//     fn signalled(&mut self, pos: usize);
+//     fn timed_out(&mut self, pos: usize);
+// }
+
 pub(crate) struct RunnerInt<P,R> {
-    events: Events,
-    poll: Poll,
-    free_stacks: VecDeque<ProtectedFixedSizeStack>,
-    // sock at index X, has a transfer at index X
+    pos: i8,
     fibers: Vec<FiberInt<P,R>>,
     free_fibers: VecDeque<usize>,
-    toexec_fibers: VecDeque<usize>,
     tomain_fibers: VecDeque<FiberRef<P,R>>,
     results: VecDeque<R>,
-    wheel: Wheel,
-    stack_size: Option<usize>,
-    dns: Dns,
 }
 
-static TICK_MS: u64 = 250;
-
 impl<P,R> RunnerInt<P,R> {
-    fn new(stack_size: Option<usize>) -> io::Result<RunnerInt<P,R>> {
-        // let (tx,rx) = channel();
+    fn new(pos: i8) -> io::Result<RunnerInt<P,R>> {
         Ok(RunnerInt {
-            stack_size,
-            poll: Poll::new().expect("unable to start poller"),
-            events: Events::with_capacity(1024),
-            free_stacks: VecDeque::with_capacity(4),
+            pos,
             fibers: Vec::new(),
             free_fibers: VecDeque::with_capacity(4),
-            toexec_fibers: VecDeque::with_capacity(4),
             tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
-            wheel: Wheel::new(&Builder::new().tick_duration(Duration::from_millis(TICK_MS))),
-            dns: Dns::new(),
         })
     }
 
@@ -176,7 +159,7 @@ impl<P,R> RunnerInt<P,R> {
                         // self.fibers[pos].blocking_on = Ready::readable();
                         // let mut rdy = self.fibers[pos].ready;
                         if !self.fibers[pos].ready.is_readable() {
-                            self.fibers[pos].register(&self.poll, Ready::readable())?;
+                            self.fibers[pos].register(&poller().poller(), Ready::readable())?;
                         }
                         self.timed_step_out(pos);
                         if self.fibers[pos].timed_out > 0 {
@@ -208,7 +191,7 @@ impl<P,R> RunnerInt<P,R> {
                         // self.fibers[pos].blocking_on = Ready::writable();
                         // let mut rdy = self.fibers[pos].ready;
                         if !self.fibers[pos].ready.is_writable() {
-                            self.fibers[pos].register(&self.poll, Ready::writable())?;
+                            self.fibers[pos].register(&poller().poller(), Ready::writable())?;
                             // self.poll.register(self.fibers[pos].evented(), Token(pos), rdy, PollOpt::level())?;
                         }
                         self.timed_step_out(pos);
@@ -275,7 +258,7 @@ impl<P,R> RunnerInt<P,R> {
                     }
                     Err(HandshakeError::Interrupted(mid)) => {
                         self.fibers[pos].sock = FiberSock::TlsTemp(mid);
-                        self.fibers[pos].register(&self.poll, Ready::readable())?;
+                        self.fibers[pos].register(&poller().poller(), Ready::readable())?;
                         self.timed_step_out(pos);
                         if self.fibers[pos].timed_out > 0 {
                             self.fibers[pos].timed_out = 0;
@@ -301,7 +284,7 @@ impl<P,R> RunnerInt<P,R> {
     }
 
     pub(crate) fn join_main(&mut self, pos: usize) -> R {
-        self.tomain_fibers.push_back(FiberRef::new(pos));
+        self.tomain_fibers.push_back(FiberRef::new(self.pos, pos));
         self.step_out(pos);
         let mut rs = None;
         swap(&mut self.fibers[pos].result, &mut rs);
@@ -310,7 +293,7 @@ impl<P,R> RunnerInt<P,R> {
 
     pub(crate) fn resume_fiber(&mut self, pos: usize, resp: R) {
         self.fibers[pos].result = Some(resp);
-        self.toexec_fibers.push_back(pos);
+        self.push_toexec(pos);
     }
 
     pub(crate) fn new_timer(&mut self, 
@@ -321,23 +304,31 @@ impl<P,R> RunnerInt<P,R> {
 
         if let Ok(pos) = self.register(func, FiberSock::Empty, param, None) {
             self.fibers[pos].result = resp;
-            if let Some(tk) = self.wheel.reserve() {
-                self.wheel.set_timeout(tk, Instant::now() + dur, pos);
+            if let Some(tk) = poller().timer_reg(self.fiber_id(pos), Some(dur)) {
                 self.fibers[pos].wtoken = Some(tk);
-                return Some(TimerRef::new(pos));
+                return Some(TimerRef::new(self.pos, pos));
             }
+            // if let Some(tk) = poller().wheel.reserve() {
+            //     poller().wheel.set_timeout(tk, Instant::now() + dur, pos);
+            //     self.fibers[pos].wtoken = Some(tk);
+            //     return Some(TimerRef::new(self.pos, pos));
+            // }
         }
         None
     }
 
     pub(crate) fn cancel_timer(&mut self, pos: usize) {
         if let Some(tk) = self.fibers[pos].wtoken {
-            self.wheel.cancel(tk);
+            poller().timer_cancel(tk);
             self.fibers[pos].wtoken = None;
             self.fibers[pos].result = None;
             self.fibers[pos].param = None;
             self.free_fibers.push_back(pos);
         }
+    }
+
+    fn fiber_id(&self, pos: usize) -> usize {
+        pos | ((self.pos as usize) << 40)
     }
 
     pub(crate) fn new_resolve(&mut self, 
@@ -359,18 +350,17 @@ impl<P,R> RunnerInt<P,R> {
             // empty for now
             host: String::new(),
         };
-        if let Some(tk) = self.wheel.reserve() {
-            self.wheel.set_timeout(tk, Instant::now() + Duration::from_millis(TICK_MS), pos);
-            self.fibers[pos].wtoken = Some(tk);
-        }
-        let mut timeout_ticks = ((to.as_secs() * 1000) + ((to.subsec_nanos() as u64) / 1000_000)) / TICK_MS;
+        let poller = poller();
+        let fiber_id = self.fiber_id(pos);
+        self.fibers[pos].wtoken = poller.timer_reg(fiber_id, None);
+        let mut timeout_ticks = ((to.as_secs() * 1000) + ((to.subsec_nanos() as u64) / 1000_000)) / poller::TICK_MS;
         if timeout_ticks == 0 {
             timeout_ticks = 1;
         } else if timeout_ticks > 255 {
             timeout_ticks = 255;
         }
         self.fibers[pos].timed_out = timeout_ticks as u8;
-        match self.dns.start_lookup(pos, self.fibers[pos].generation, domain) {
+        match poller.dns().start_lookup(fiber_id, self.fibers[pos].generation, domain) {
             Ok(None) => {
                 self.fibers[pos].connect_param = Some(cp);
                 return Ok(pos);
@@ -379,7 +369,7 @@ impl<P,R> RunnerInt<P,R> {
                 cp.host = domain.to_string();
                 self.fibers[pos].connect_param = Some(cp);
                 self.fibers[pos].sock = FiberSock::Udp(sock);
-                self.fibers[pos].register(&self.poll, Ready::readable())?;
+                self.fibers[pos].register(&poller.poller(), Ready::readable())?;
                 return Ok(pos);
             }
             Err(e) => {
@@ -400,6 +390,7 @@ impl<P,R> RunnerInt<P,R> {
         let empty = ft.is_empty();
         let mut fiber = FiberInt {
             ready: Ready::empty(),
+            runner: self.pos,
             param,
             me: 0,
             generation: 0,
@@ -420,18 +411,17 @@ impl<P,R> RunnerInt<P,R> {
         let pos = match self.free_fibers.pop_front() {
             Some(free_pos) => {
                 let gen = self.fibers[free_pos].generation;
-                fiber.me = free_pos;
+                fiber.me = self.fiber_id(free_pos);
                 fiber.generation = gen+1;
                 if let FiberSock::Listener(_) = fiber.sock {
-                    fiber.register(&self.poll, Ready::readable())?;
+                    fiber.register(&poller().poller(), Ready::readable())?;
                 }
                 self.fibers[free_pos] = fiber;
                 free_pos
             }
             _ => {
-                fiber.me = self.fibers.len();
                 if let FiberSock::Listener(_) = fiber.sock {
-                    fiber.register(&self.poll, Ready::readable())?;
+                    fiber.register(&poller().poller(), Ready::readable())?;
                 }
                 self.fibers.push(fiber);
                 self.fibers.len() - 1
@@ -440,12 +430,20 @@ impl<P,R> RunnerInt<P,R> {
         // Only schedule for immediate execution if it has a socket.
         // Timers and DNS lookups don't.
         if !empty {
-            self.toexec_fibers.push_back(pos);
+            self.push_toexec(pos);
         }
         if let Some(parent) = parent {
             self.fibers[parent].children.push_back(pos);
         }
         Ok(pos)
+    }
+
+    fn push_toexec(&self, pos: usize) {
+        poller().toexec_push(self.pos as usize, pos);
+    }
+
+    fn pop_toexec(&self) -> Option<usize> {
+        poller().toexec_pop(self.pos as usize)
     }
 
     pub(crate) fn child_iter(&mut self, parent: usize) -> Option<R> {
@@ -475,7 +473,7 @@ impl<P,R> RunnerInt<P,R> {
                     self.free_fibers.push_back(child);
                 } else {
                     // Now that we have taken its result schedule it back for execution.
-                    self.toexec_fibers.push_back(child);
+                    self.push_toexec(child);
                 }
 
                 if out.is_some() {
@@ -495,37 +493,22 @@ impl<P,R> RunnerInt<P,R> {
     pub(crate) fn hibernate_for_read(&mut self, pos: usize) -> io::Result<()> {
         self.fibers[pos].state = FiberState::Unstacked;
         if !self.fibers[pos].ready.is_readable() {
-            self.fibers[pos].register(&self.poll, Ready::readable())?;
+            self.fibers[pos].register(&poller().poller(), Ready::readable())?;
         }
         self.step_out(pos);
         Ok(())
     }
 
-    fn get_stack(&mut self) -> ProtectedFixedSizeStack {
-        match self.free_stacks.pop_front() {
-            None if self.stack_size.is_none() => {
-                ProtectedFixedSizeStack::default()
-            }
-            None => {
-                ProtectedFixedSizeStack::new(self.stack_size.unwrap()).expect("Can not create stack")
-            }
-            Some(stack) => {
-                stack
-            }
-        }
-    }
-
     fn timed_step_out(&mut self, pos: usize) {
         if let Some(dur) = self.fibers[pos].timeout {
-            if let Some(tk) = self.wheel.reserve() {
+            if let Some(tk) = poller().timer_reg(self.fiber_id(pos),Some(dur)) {
                 self.fibers[pos].timed_out = 0;
-                self.wheel.set_timeout(tk, Instant::now() + dur, pos);
                 self.fibers[pos].wtoken = Some(tk);
             }
         }
         self.step_out(pos);
         if let Some(tk) = self.fibers[pos].wtoken {
-            self.wheel.cancel(tk);
+            poller().timer_cancel(tk);
             self.fibers[pos].wtoken = None;
         }
     }
@@ -545,7 +528,7 @@ impl<P,R> RunnerInt<P,R> {
     fn step_into(&mut self, pos: usize) {
         if self.fibers[pos].func.is_some() {
             if self.fibers[pos].t.is_none() {
-                let stack = self.get_stack();
+                let stack = poller().stack_pop();
                 let fiber = &mut self.fibers[pos];
                 let t = Transfer::new(unsafe { Context::new(&stack, context_function::<P,R>) }, 0);
                 fiber.stack = Some(stack);
@@ -569,7 +552,7 @@ impl<P,R> RunnerInt<P,R> {
         swap(&mut self.fibers[pos].stack, &mut stack);
         let stack = stack.unwrap();
         self.fibers[pos].t = None;
-        self.free_stacks.push_front(stack);
+        poller().stack_push(stack);
     }
 
     // Back on main stack, check state if we should clean up.
@@ -600,7 +583,7 @@ impl<P,R> RunnerInt<P,R> {
             // No parent and we have result. Take it, then reschedule it back
             // on next poll().
             self.take_result(pos);
-            self.toexec_fibers.push_back(pos);
+            self.push_toexec(pos);
         }
     }
 
@@ -647,7 +630,7 @@ impl<P,R> RunnerInt<P,R> {
                 }
             }
             fiber.connect_param = None;
-            if fiber.register(&self.poll, Ready::writable()).is_err() {
+            if fiber.register(&poller().poller(), Ready::writable()).is_err() {
                 ok = false;
             }
         }
@@ -657,76 +640,59 @@ impl<P,R> RunnerInt<P,R> {
         }
     }
 
-    fn poll(&mut self, mut dur: Duration) -> bool {
-        while let Some(pos) = self.toexec_fibers.pop_front() {
-            self.step_into(pos);
+    fn run(&mut self) -> bool {
+        while let Some(pos) = self.pop_toexec() {
+            if self.fibers[pos].connect_param.is_some() {
+                let mut dns_buf = [0u8;512];
+                if let Ok(nb) = self.fibers[pos].sock.read(&mut dns_buf) {
+                    if let Some(adr) = dns_parse(&mut dns_buf[..nb]) {
+                        if let Some(tk) = self.fibers[pos].wtoken {
+                            poller().timer_cancel(tk);
+                        }
+                        self.fibers[pos].wtoken = None;
+                        self.have_addr(pos, adr);
+                    }
+                }
+            } else {
+                self.step_into(pos);
+            }
         }
 
-        // no waiting if fibers waiting for main stack
-        if self.tomain_fibers.len() > 0 {
-            dur = Duration::from_millis(0);
-        }
-        if let Err(_) = self.poll.poll(&mut self.events, Some(dur)) {
-            return self.signaled();
-        }
-
-        while let Some((pos,gen,addr)) = self.dns.check_result() {
+        while let Some((pos,gen,addr)) = poller().dns_check(self.pos as usize) {
             {
                 let fiber = &mut self.fibers[pos];
                 if fiber.generation != gen {
                     continue;
                 }
                 if let Some(tk) = fiber.wtoken {
-                    self.wheel.cancel(tk);
+                    poller().timer_cancel(tk);
                     fiber.wtoken = None;
                 }
             }
             self.have_addr(pos, addr);
         }
 
-        if self.events.len() > 0 {
-            let mut events = Events::with_capacity(0);
-            swap(&mut self.events, &mut events);
-            for ev in events.into_iter() {
-                let pos = ev.token().0;
-                if self.fibers[pos].connect_param.is_some() {
-                    let mut dns_buf = [0u8;512];
-                    if let Ok(nb) = self.fibers[pos].sock.read(&mut dns_buf) {
-                        if let Some(adr) = dns_parse(&mut dns_buf[..nb]) {
-                            if let Some(tk) = self.fibers[pos].wtoken {
-                                self.wheel.cancel(tk);
-                            }
-                            self.fibers[pos].wtoken = None;
-                            self.have_addr(pos, adr);
-                            // self.step_into(pos);
-                        }
-                    }
-                } else {
-                    self.step_into(pos);
-                }
-            }
-            swap(&mut self.events, &mut events);
-        }
-
-        let now = Instant::now();
-        while let Some(pos) = self.wheel.poll(now) {
+        let mut my_timedout = &mut poller().timedout_fibers[self.pos as usize];
+        while let Some(pos) = my_timedout.pop_front() {
             if let Some(_) = self.fibers[pos].wtoken {
                 // Check if this is timer on connect.
                 if self.fibers[pos].connect_param.is_some() {
                     // DNS tick down
                     self.fibers[pos].timed_out -= 1;
                     if self.fibers[pos].timed_out > 0 {
+                        let fiber_id = self.fiber_id(pos);
                         let fiber = &mut self.fibers[pos];
                         // When using our dns client, we have a UDP socket for it.
                         if let &FiberSock::Udp(ref udp) = &fiber.sock {
                             if let Some(ref cp) = fiber.connect_param {
-                                let _ = self.dns.lookup_on(udp, 
+                                let _ = poller().dns().lookup_on(udp, 
                                     fiber.timed_out as usize,
                                     cp.host.as_str());
-                                if let Some(tk) = self.wheel.reserve() {
-                                    self.wheel.set_timeout(tk, Instant::now() + Duration::from_millis(TICK_MS), pos);
-                                    fiber.wtoken = Some(tk);
-                                }
+                                // if let Some(tk) = poller().wheel.reserve() {
+                                //     poller().wheel.set_timeout(tk, Instant::now() + Duration::from_millis(poller::TICK_MS), pos);
+                                //     fiber.wtoken = Some(tk);
+                                // }
+                                fiber.wtoken = poller().timer_reg(fiber_id, None);
                             }
                         }
                     } else {
@@ -754,7 +720,7 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
         swap(&mut fiber.param, &mut param);
         let param = param.unwrap();
         // if fiber.func.is_some() {
-            fiber.result = (fiber.func.unwrap())(Fiber::new(fiber.me), param);
+            fiber.result = (fiber.func.unwrap())(Fiber::new(fiber.runner, fiber.me), param);
         // }
         // else if fiber.resolv_func.is_some() {
         //     fiber.result = (fiber.resolv_func.unwrap())(Fiber::new(fiber.me), param);
@@ -770,21 +736,28 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
     }
 }
 extern "C" {
-    fn get_runner() -> *mut c_void;
-    fn set_runner(r: *mut c_void);
+    fn find_empty() -> i8;
+    // fn get_poller() -> *mut c_void;
+    // fn set_poller(r: *mut c_void);
+    pub(crate) fn get_runner(pos: i8) -> *mut c_void;
+    fn set_runner(pos: i8, r: *mut c_void);
 }
 
-fn start_runner<'a,P,R>(stack_size: Option<usize>) -> io::Result<()> {
+fn start_runner<'a,P,R>() -> io::Result<i8> {
     unsafe {
-        let r: *mut RunnerInt<P,R> = Box::into_raw(Box::new(RunnerInt::new(stack_size)?));
-        set_runner(r as *mut c_void);
-        Ok(())
+        let pos =  find_empty();
+        if pos == -1 {
+            return Err(io::Error::new(io::ErrorKind::Other, "no space"));
+        }
+        let r: *mut RunnerInt<P,R> = Box::into_raw(Box::new(RunnerInt::new(pos)?));
+        set_runner(pos, r as *mut c_void);
+        Ok(pos)
     }
 }
 
-pub(crate) fn runner<'a,P,R>() -> &'a mut RunnerInt<P,R> {
+pub(crate) fn runner<'a,P,R>(pos: i8) -> &'a mut RunnerInt<P,R> {
     unsafe {
-        let rc = get_runner();
+        let rc = get_runner(pos);
         ::std::mem::transmute::<*mut c_void, &mut RunnerInt<P,R>>(rc)
     }
 }

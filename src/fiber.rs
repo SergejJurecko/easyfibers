@@ -23,21 +23,20 @@ use native_tls::{TlsStream, TlsConnector, TlsAcceptor, MidHandshakeTlsStream};
 /// You must test your code for any possible SIGBUS situations and be careful with calling external crates.
 pub type FiberFn<P,R> = fn(Fiber<P,R>,P) -> Option<R>;
 
-// /// Fiber execute function for DNS lookups.
-// pub type FiberResolvedFn<P,R> = fn(Fiber<P,R>, io::Result<IpAddr>, P) -> Option<R>;
-
 /// Available within the fiber execute function to configure fiber or create child fibers. Child fibers
 /// return results to parent fibers instead of poller on main stack.
 #[derive(PartialEq,Debug)]
 pub struct Fiber<P,R> {
+    pub(crate) runner: i8,
     pub(crate) id: usize,
     param: PhantomData<P>,
     resp: PhantomData<R>,
 }
 
 impl<P,R> Fiber<P,R> {
-    pub(crate) fn new(pos: usize) -> Fiber<P,R> {
+    pub(crate) fn new(runner: i8, pos: usize) -> Fiber<P,R> {
         Fiber {
+            runner,
             id: pos,
             param: PhantomData,
             resp: PhantomData,
@@ -48,29 +47,29 @@ impl<P,R> Fiber<P,R> {
 impl<P,R> Fiber<P,R> {
     /// How long to wait on socket operations before timing out. You probably want to set something.
     pub fn socket_timeout(&self, t: Option<Duration>) {
-        runner::<P,R>().socket_timeout(self.id, t)
+        runner::<P,R>(self.runner).socket_timeout(self.id, t)
     }
 
     /// Return intermediate result. A fiber can stream responses to poller or to its parent fiber.
     ///
     /// This function blocks fiber until response is received to poller or parent.
     pub fn resp_chunk(&self, chunk: R) {
-        runner::<P,R>().resp_chunk(self.id, chunk);
+        runner::<P,R>(self.runner).resp_chunk(self.id, chunk);
     }
 
     /// Accept TCP socket. Works only on fibers from TcpListener.
     pub fn accept_tcp(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        runner::<P,R>().accept_tcp(self.id)
+        runner::<P,R>(self.runner).accept_tcp(self.id)
     }
 
     /// Convert fiber from TcpStream created with TcpStream::connect to TlsStream.
     pub fn tcp_tls_connect(&self, con: TlsConnector, domain: &str) -> io::Result<()> {
-        runner::<P,R>().tcp_tls_connect(self.id, con, domain)
+        runner::<P,R>(self.runner).tcp_tls_connect(self.id, con, domain)
     }
 
     /// Convert fiber from TcpStream created with TcpListener::accept to TlsStream.
     pub fn tcp_tls_accept(&self, con: TlsAcceptor) -> io::Result<()> {
-        runner::<P,R>().tcp_tls_accept(self.id, con)
+        runner::<P,R>(self.runner).tcp_tls_accept(self.id, con)
     }
 
     /// Start fiber on TCP socket.
@@ -78,7 +77,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
@@ -86,7 +85,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
@@ -94,7 +93,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner().register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
     }
 
     /// Resolve domain, connect and run fiber.
@@ -110,21 +109,21 @@ impl<P,R> Fiber<P,R> {
             timeout: Duration,
             func: FiberFn<P,R>,
             param: P) -> io::Result<()> {
-        runner::<P,R>().new_resolve(None, domain, Some(func),timeout, st, port, param).map(|_|{()})
+        runner::<P,R>(self.runner).new_resolve(None, domain, Some(func),timeout, st, port, param).map(|_|{()})
     }
 
     /// Start a child fiber with tcp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner::<P,R>().register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)).map(|_|{()})
+        runner::<P,R>(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)).map(|_|{()})
     }
 
     /// Start a child fiber with an udp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner::<P,R>().register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)).map(|_|{()})
+        runner::<P,R>(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)).map(|_|{()})
     }
     
     /// Start a child fiber that resolves domain, connects and runs fiber.
@@ -139,14 +138,14 @@ impl<P,R> Fiber<P,R> {
             timeout: Duration,
             func: FiberFn<P,R>,
             param: P) -> io::Result<()> {
-        runner::<P,R>().new_resolve(Some(self.id), domain, Some(func),timeout, st, port, param).map(|_|{()})
+        runner::<P,R>(self.runner).new_resolve(Some(self.id), domain, Some(func),timeout, st, port, param).map(|_|{()})
     }
 
     /// Call main stack.
     ///
     /// This function blocks until main stack produces response.
     pub fn join_main(&self) -> R {
-        runner::<P,R>().join_main(self.id)
+        runner::<P,R>(self.runner).join_main(self.id)
     }
 
     /// Get result of child. If fiber has multiple children it will return first available result.
@@ -154,13 +153,13 @@ impl<P,R> Fiber<P,R> {
     ///
     /// If none is returned all children have finished executing.
     pub fn get_child(&self) -> Option<R> {
-        runner::<P,R>().child_iter(self.id)
+        runner::<P,R>(self.runner).child_iter(self.id)
     }
 
     /// Remove stack from current fiber and reuse on other connections. Once socket becomes signalled
     /// for reads, resume from the start of FiberFn.
     pub fn hibernate_for_read(&self) -> io::Result<()> {
-        runner::<P,R>().hibernate_for_read(self.id)
+        runner::<P,R>(self.runner).hibernate_for_read(self.id)
     }
 }
 
@@ -170,7 +169,7 @@ impl<P,R> Read for Fiber<P,R> {
     /// Read data from socket. If no data is available to read, fiber will be scheduled out for another one,
     /// until there is data available.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        runner::<P,R>().read(self.id, buf)
+        runner::<P,R>(self.runner).read(self.id, buf)
     }
 }
 
@@ -178,7 +177,7 @@ impl<'a,P,R> Read for &'a Fiber<P,R> {
     /// Read data from socket. If no data is available to read, fiber will be scheduled out for another one,
     /// until there is data available.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        runner::<P,R>().read(self.id, buf)
+        runner::<P,R>(self.runner).read(self.id, buf)
     }
 }
 
@@ -186,24 +185,26 @@ impl<P,R> Write for Fiber<P,R> {
     /// Write data to socket. If data can not be written at this time, 
     /// fiber will be scheduled out for another one until there is data available.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        runner::<P,R>().write(self.id, buf)
+        runner::<P,R>(self.runner).write(self.id, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        runner::<P,R>().flush(self.id)
+        runner::<P,R>(self.runner).flush(self.id)
     }
 }
 
 /// Reference to fiber on main stack.
 pub struct FiberRef<P,R> {
+    pub(crate) runner: i8,
     pub(crate) id: usize,
     p: PhantomData<P>,
     r: PhantomData<R>,
 }
 
 impl<P,R> FiberRef<P,R> {
-    pub(crate) fn new(id: usize) -> FiberRef<P,R> {
+    pub(crate) fn new(runner: i8, id: usize) -> FiberRef<P,R> {
         FiberRef {
+            runner,
             id,
             p: PhantomData,
             r: PhantomData,
@@ -214,21 +215,23 @@ impl<P,R> FiberRef<P,R> {
     ///
     /// This function does not block, fiber gets resumed on next poll().
     pub fn resume_fiber(self, resp: R) {
-        runner::<P,R>().resume_fiber(self.id, resp);
+        runner::<P,R>(self.runner).resume_fiber(self.id, resp);
     }
 }
 
 /// Reference to timer on main stack.
 pub struct TimerRef<P,R> {
+    pub(crate) runner: i8,
     pub(crate) id: usize,
     p: PhantomData<P>,
     r: PhantomData<R>,
 }
 
 impl<P,R> TimerRef<P,R> {
-    pub(crate) fn new(id: usize) -> TimerRef<P,R> {
+    pub(crate) fn new(runner: i8, id: usize) -> TimerRef<P,R> {
         TimerRef {
             id,
+            runner,
             p: PhantomData,
             r: PhantomData,
         }
@@ -237,7 +240,7 @@ impl<P,R> TimerRef<P,R> {
 
 impl<P,R> Drop for TimerRef<P,R> {
     fn drop(&mut self) {
-        runner::<P,R>().cancel_timer(self.id);
+        runner::<P,R>(self.runner).cancel_timer(self.id);
     }
 }
 
@@ -262,9 +265,11 @@ pub(crate) struct ConnectParam {
 }
 
 pub(crate) struct FiberInt<P,R> {
+    pub(crate) runner: i8,
     pub(crate) ready: Ready,
     pub(crate) param: Option<P>,
     pub(crate) state: FiberState,
+    // full fiber_id
     pub(crate) me: usize,
     // Fiber slots get reused, this is to keep track of how many times
     // fiber has been reused. Useful if this ID gets sent someplace outside
