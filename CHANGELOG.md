@@ -1,3 +1,7 @@
+# 0.7.0 (Jul 31, 2017)
+
+* Split poller into Runner and Poller. This way we can instantiate multiple runners that are tied to a param and response type. This way multiple services can be executed at the same time without needing to share data structures.
+
 # 0.6.2 (Jul 25, 2017)
 
 * Bugfix for macOS DNS lookup if it times out and cleanup of DNS thread.

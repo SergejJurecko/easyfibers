@@ -727,7 +727,10 @@ extern "C" {
 
 fn start_runner<'a,P,R>() -> io::Result<i8> {
     unsafe {
-        let pos =  find_empty();
+        if poller::get_poller() == ptr::null_mut() {
+            return Err(io::Error::new(io::ErrorKind::Other, "no poller"));
+        }
+        let pos = find_empty();
         if pos == -1 {
             return Err(io::Error::new(io::ErrorKind::Other, "no space"));
         }

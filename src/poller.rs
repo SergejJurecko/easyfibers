@@ -197,6 +197,6 @@ pub(crate) fn poller<'a>() -> &'a mut PollerInt {
 }
 
 extern "C" {
-    fn get_poller() -> *mut c_void;
+    pub(crate) fn get_poller() -> *mut c_void;
     fn set_poller(r: *mut c_void);
 }
