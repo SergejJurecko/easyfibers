@@ -37,7 +37,7 @@ Heavy use of closures makes the code ugly, produces awful compile errors and mak
 - [x] join_main to call main stack from fiber and resume_fiber to resume it
 - [x] SSL/TLS
 - [x] Fiber::hibernate_for_read for keep-alive scenarios
-- [ ] FiberLayer trait to compose services
+- [x] Multiple runners that enable running multiple different services
 - [x] Timer based fibers
 - [x] Async DNS lookups
 

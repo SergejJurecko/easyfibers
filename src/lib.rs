@@ -179,7 +179,6 @@ mod tests {
 
     #[test]
     fn http_proxy() {
-        println!("Starting random http proxy. To query call: curl \"http://127.0.0.1:10000\"");
         // First time calling random requires a large stack, we must initialize it on main stack!
         rand::random::<u8>();
         let p = Param {
@@ -191,15 +190,19 @@ mod tests {
             https_hosts: vec!["www.reddit.com".to_string(), "www.google.com".to_string(),
                 "arstechnica.com".to_string(), "news.ycombinator.com".to_string()],
         };
-        // Start our fiber poller.
+        // Start our poller.
         // Set this stack lower to see some SIGBUS action.
-        let poll:Poller<Param,Resp> = Poller::new(Some(4096*10)).unwrap();
+        let poller:Poller = Poller::new(Some(4096*10)).unwrap();
+        // Start runner with Param and Resp types.
+        let runner:Runner<Param,Resp> = Runner::new().unwrap();
         // Start a TCP listener socket
         let listener = TcpListener::bind(&"127.0.0.1:10000".parse().unwrap()).unwrap();
         // Create a fiber from it. Listener socket will use sock_acceptor function.
-        poll.new_listener(listener, sock_acceptor, p).unwrap();
-        // Poll for 3 requests before exiting.
+        runner.new_listener(listener, sock_acceptor, p).unwrap();
+        // Run 20 requests and exit.
         let mut reqs_remain = 20;
+        // Start requests. We can directly start a TcpStream because we are not resolving anything.
+        // Requests will call our own server.
         for i in 0..reqs_remain {
             let p = Param {
                 chosen: Some("127.0.0.1:10000".to_string()),
@@ -210,22 +213,24 @@ mod tests {
             };
             let addr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
             let client_sock = TcpStream::connect(&SocketAddr::new(addr, 10000)).unwrap();
-            poll.new_tcp(client_sock, get_http, p);
+            runner.new_tcp(client_sock, get_http, p);
         }
         while reqs_remain > 0 {
-            if poll.poll(Duration::from_millis(10)) {
-                while let Some(r) = poll.get_response() {
-                    if Resp::Done == r {
-                        reqs_remain -= 1;
-                        println!("Finished executing, req_remain: {}", reqs_remain);
-                    } else if let Resp::Bytes(slice) = r {
-                        println!("Main stack got {} bytes", slice.len());
-                    }
+            if !poller.poll(Duration::from_millis(10)) {
+                continue;
+            }
+            if !runner.run() {
+                continue;
+            }
+            while let Some(r) = runner.get_response() {
+                if Resp::Done == r {
+                    reqs_remain -= 1;
+                    println!("Finished executing, req_remain: {}", reqs_remain);
+                } else if let Resp::Bytes(slice) = r {
+                    println!("Main stack got {} bytes", slice.len());
                 }
-
-                // we arent using 
-                while let Some(f) = poll.get_fiber() {
-                }
+            }
+            while let Some(f) = runner.get_fiber() {
             }
         }
         println!("poll out");

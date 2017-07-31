@@ -27,7 +27,8 @@ pub struct Runner<P,R> {
 type TlsResult = Result<TlsStream<TcpStream>,HandshakeError<TcpStream>>;
 
 impl<P,R> Runner<P,R> {
-    /// Start runner. This function does not block.
+    /// Start runner. This function does not block. Can fail only if we ran out of space for new runners.
+    /// ATM max runners is 20.
     pub fn new() -> io::Result<Runner<P,R>> {
         let pos = start_runner::<P,R>()?;
         Ok(Runner {
@@ -112,11 +113,6 @@ impl<P,R> Drop for Runner<P,R> {
     }
 }
 
-// pub(crate) trait PolledRunner {
-//     fn signalled(&mut self, pos: usize);
-//     fn timed_out(&mut self, pos: usize);
-// }
-
 pub(crate) struct RunnerInt<P,R> {
     pos: i8,
     fibers: Vec<FiberInt<P,R>>,
@@ -139,10 +135,6 @@ impl<P,R> RunnerInt<P,R> {
     pub(crate) fn socket_timeout(&mut self, pos: usize, dur: Option<Duration>) {
         self.fibers[pos].timeout = dur;
     }
-
-    // pub(crate) fn close(&mut self, pos: usize) {
-    //     self.fibers[pos].state = FiberState::Closed;
-    // }
 
     pub(crate) fn read(&mut self, pos: usize, buf: &mut [u8]) -> io::Result<usize> {
         loop {
@@ -396,7 +388,6 @@ impl<P,R> RunnerInt<P,R> {
             generation: 0,
             state: FiberState::Unstacked,
             func,
-            // resolv_func: None,
             connect_param: None,
             sock: ft,
             t: None,
@@ -420,6 +411,7 @@ impl<P,R> RunnerInt<P,R> {
                 free_pos
             }
             _ => {
+                fiber.me = self.fiber_id(self.fibers.len());
                 if let FiberSock::Listener(_) = fiber.sock {
                     fiber.register(&poller().poller(), Ready::readable())?;
                 }
@@ -501,7 +493,7 @@ impl<P,R> RunnerInt<P,R> {
 
     fn timed_step_out(&mut self, pos: usize) {
         if let Some(dur) = self.fibers[pos].timeout {
-            if let Some(tk) = poller().timer_reg(self.fiber_id(pos),Some(dur)) {
+            if let Some(tk) = poller().timer_reg(self.fibers[pos].me,Some(dur)) {
                 self.fibers[pos].timed_out = 0;
                 self.fibers[pos].wtoken = Some(tk);
             }
@@ -672,8 +664,7 @@ impl<P,R> RunnerInt<P,R> {
             self.have_addr(pos, addr);
         }
 
-        let mut my_timedout = &mut poller().timedout_fibers[self.pos as usize];
-        while let Some(pos) = my_timedout.pop_front() {
+        while let Some(pos) = poller().timedout_pop(self.pos as usize) {
             if let Some(_) = self.fibers[pos].wtoken {
                 // Check if this is timer on connect.
                 if self.fibers[pos].connect_param.is_some() {
@@ -719,15 +710,8 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
         let mut param = None;
         swap(&mut fiber.param, &mut param);
         let param = param.unwrap();
-        // if fiber.func.is_some() {
-            fiber.result = (fiber.func.unwrap())(Fiber::new(fiber.runner, fiber.me), param);
-        // }
-        // else if fiber.resolv_func.is_some() {
-        //     fiber.result = (fiber.resolv_func.unwrap())(Fiber::new(fiber.me), param);
-        // }
-        // if fiber.state == FiberState::Stacked {
-            fiber.state = FiberState::Closed;
-        // }
+        fiber.result = (fiber.func.unwrap())(Fiber::new(fiber.runner, fiber.me & u32::max_value() as usize), param);
+        fiber.state = FiberState::Closed;
         let mut t = None;
         swap(&mut fiber.t, &mut t);
         let t = t.unwrap();
@@ -737,8 +721,6 @@ extern "C" fn context_function<P,R>(t: Transfer) -> ! {
 }
 extern "C" {
     fn find_empty() -> i8;
-    // fn get_poller() -> *mut c_void;
-    // fn set_poller(r: *mut c_void);
     pub(crate) fn get_runner(pos: i8) -> *mut c_void;
     fn set_runner(pos: i8, r: *mut c_void);
 }

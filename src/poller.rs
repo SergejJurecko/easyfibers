@@ -30,8 +30,8 @@ impl Poller {
     /// Execute socket poll, timers and check dns lookups.
     /// Will block for a maximum of dur or not at all if a socket is signalled.
     /// Returns true if something changed and runners should be executed.
-    pub fn poll(&self, dur: Duration) {
-        poller().poll(dur);
+    pub fn poll(&self, dur: Duration) -> bool {
+        poller().poll(dur)
     }
 }
 
@@ -54,7 +54,7 @@ pub(crate) struct PollerInt {
     stack_size: Option<usize>,
     dns: Dns,
     toexec_fibers: [VecDeque<usize>;20],
-    pub(crate) timedout_fibers: [VecDeque<usize>;20],
+    timedout_fibers: [VecDeque<usize>;20],
     // for now only used on macOS
     lookup_results: [VecDeque<(usize,usize,IpAddr)>;20],
 }
@@ -104,12 +104,14 @@ impl PollerInt {
         (runner,pos)
     }
 
-    fn poll(&mut self, dur: Duration) {
+    fn poll(&mut self, dur: Duration) -> bool {
+        let mut smth = false;
         if let Err(_) = self.poll.poll(&mut self.events, Some(dur)) {
-            return;
+            return smth;
         }
 
         if self.events.len() > 0 {
+            smth = true;
             let mut events = Events::with_capacity(0);
             swap(&mut self.events, &mut events);
             for ev in events.into_iter() {
@@ -121,14 +123,18 @@ impl PollerInt {
 
         let now = Instant::now();
         while let Some(id) = self.wheel.poll(now) {
+            smth = true;
             let (runner, pos) = Self::split_id(id);
             self.timedout_fibers[runner].push_back(pos);
         }
 
         while let Some((id,gen,addr)) = self.dns.check_result() {
+            smth = true;
+            println!("dns got result");
             let (runner, pos) = Self::split_id(id);
             self.lookup_results[runner].push_back((pos,gen,addr));
         }
+        smth
     }
 
     pub(crate) fn timer_reg(&mut self, id: usize, dur: Option<Duration>) -> Option<WToken> {
@@ -176,6 +182,10 @@ impl PollerInt {
 
     pub(crate) fn stack_push(&mut self, stack: ProtectedFixedSizeStack) {
         self.free_stacks.push_front(stack)
+    }
+
+    pub(crate) fn timedout_pop(&mut self, runner: usize) -> Option<usize> {
+        self.timedout_fibers[runner].pop_front()
     }
 }
 

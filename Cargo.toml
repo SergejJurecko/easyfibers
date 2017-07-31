@@ -1,6 +1,6 @@
 [package]
 name = "easyfibers"
-version = "0.6.2"
+version = "0.7.0"
 authors = ["sergej.jurecko@gmail.com"]
 build = "build.rs"
 description = "easyfibers is a closure-less couroutine library for executing asynchronous tasks as painlessly as possible."
