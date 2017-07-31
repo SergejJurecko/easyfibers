@@ -54,12 +54,11 @@ mod tests {
     use super::*;
     use mio::net::{TcpStream,TcpListener};
     use std::io::{Write,Read};
-    use std::time::{Duration,Instant};
-    use std::io;
+    use std::time::{Duration};
     use std::net::{SocketAddr,Ipv4Addr,IpAddr};
     use std::str;
     use native_tls::{TlsConnector};
-    use dns::Dns;
+    use std::io;
 
     #[derive(Clone)]
     struct Param {
@@ -83,13 +82,13 @@ mod tests {
         let mut v = [0u8;2000];
         let host = p.chosen.unwrap();
 
-        let timeout = if p.is_https {
+        if p.is_https {
             let connector = TlsConnector::builder().unwrap().build().unwrap();
-            fiber.tcp_tls_connect(connector, host.as_str());
+            fiber.tcp_tls_connect(connector, host.as_str()).unwrap();
             // https requires longer timeout
             fiber.socket_timeout(Some(Duration::from_millis(2000)));
         } else {
-            fiber.socket_timeout(Some(Duration::from_millis(2000)));
+            fiber.socket_timeout(Some(Duration::from_millis(1000)));
         };
 
         // We want to time out so use keep-alive
@@ -104,7 +103,7 @@ mod tests {
                     fiber.resp_chunk(Resp::Bytes(&v[0..sz]));
                 }
                 Err(e) => {
-                    // assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+                    assert_eq!(e.kind(), io::ErrorKind::TimedOut);
                     break;
                 }
             }
@@ -142,7 +141,6 @@ mod tests {
         } else {
             panic!("")
         };
-        let a = Instant::now();
         fiber.join_resolve_connect(addr.as_str(), SocketType::Tcp, port, Duration::from_millis(3000), get_http, p1).unwrap();
         println!("Returning: {}{}", if port == 443 { "https://" } else { "http://" },  addr);
 
@@ -160,13 +158,13 @@ mod tests {
     }
 
     // Accept sockets in an endless loop.
-    fn sock_acceptor(mut fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
+    fn sock_acceptor(fiber: Fiber<Param,Resp>, p: Param) -> Option<Resp> {
         loop {
             // If no sockets available, fiber will be scheduled out for execution until something connects. 
             match fiber.accept_tcp() {
                 Ok((sock,_)) => {
                     // Create a new fiber on received socket. Use rand_http_proxy function to run it.
-                    fiber.new_tcp(sock,rand_http_proxy, p.clone());
+                    fiber.new_tcp(sock,rand_http_proxy, p.clone()).unwrap();
                 }
                 _ => {
                     println!("Listen socket error");
@@ -203,7 +201,7 @@ mod tests {
         let mut reqs_remain = 20;
         // Start requests. We can directly start a TcpStream because we are not resolving anything.
         // Requests will call our own server.
-        for i in 0..reqs_remain {
+        for _ in 0..reqs_remain {
             let p = Param {
                 chosen: Some("127.0.0.1:10000".to_string()),
                 is_https: false,
@@ -213,7 +211,7 @@ mod tests {
             };
             let addr = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
             let client_sock = TcpStream::connect(&SocketAddr::new(addr, 10000)).unwrap();
-            runner.new_tcp(client_sock, get_http, p);
+            runner.new_tcp(client_sock, get_http, p).unwrap();
         }
         while reqs_remain > 0 {
             if !poller.poll(Duration::from_millis(10)) {
@@ -230,7 +228,7 @@ mod tests {
                     println!("Main stack got {} bytes", slice.len());
                 }
             }
-            while let Some(f) = runner.get_fiber() {
+            while let Some(_) = runner.get_fiber() {
             }
         }
         println!("poll out");
