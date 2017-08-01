@@ -144,7 +144,7 @@ impl<P,R> Fiber<P,R> {
     /// Call main stack.
     ///
     /// This function blocks until main stack produces response.
-    pub fn join_main(&self) -> R {
+    pub fn join_main(&self) -> Option<R> {
         runner::<P,R>(self.runner).join_main(self.id)
     }
 
@@ -156,10 +156,16 @@ impl<P,R> Fiber<P,R> {
         runner::<P,R>(self.runner).child_iter(self.id)
     }
 
-    /// Remove stack from current fiber and reuse on other connections. Once socket becomes signalled
+    /// Remove stack from current fiber and reuse on other fibers. Once socket becomes signalled
     /// for reads, resume from the start of FiberFn.
     pub fn hibernate_for_read(&self) -> io::Result<()> {
         runner::<P,R>(self.runner).hibernate_for_read(self.id)
+    }
+
+    /// Remove stack from current fiber and reuse on other fibers. Once main resumes fiber
+    /// it will start from beginning of execute function.
+    pub fn hibernate_join_main(&self) {
+        runner::<P,R>(self.runner).hibernate_join_main(self.id);
     }
 }
 
@@ -211,11 +217,18 @@ impl<P,R> FiberRef<P,R> {
         }
     }
 
-    /// Resume fiber with response from main stack.
+    /// Resume fiber with response from main stack if fiber waiting on join_main function.
+    /// If fiber has been stopped with hibernate_join_main response will not be passed to it.
     ///
     /// This function does not block, fiber gets resumed on next poll().
-    pub fn resume_fiber(self, resp: R) {
+    pub fn resume_fiber(self, resp: Option<R>) {
         runner::<P,R>(self.runner).resume_fiber(self.id, resp);
+    }
+}
+
+impl<P,R> Drop for FiberRef<P,R> {
+    fn drop(&mut self) {
+        runner::<P,R>(self.runner).resume_fiber(self.id,None);
     }
 }
 

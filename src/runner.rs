@@ -275,16 +275,16 @@ impl<P,R> RunnerInt<P,R> {
         self.fibers[pos].sock.flush()
     }
 
-    pub(crate) fn join_main(&mut self, pos: usize) -> R {
+    pub(crate) fn join_main(&mut self, pos: usize) -> Option<R> {
         self.tomain_fibers.push_back(FiberRef::new(self.pos, pos));
         self.step_out(pos);
         let mut rs = None;
         swap(&mut self.fibers[pos].result, &mut rs);
-        rs.unwrap()
+        rs
     }
 
-    pub(crate) fn resume_fiber(&mut self, pos: usize, resp: R) {
-        self.fibers[pos].result = Some(resp);
+    pub(crate) fn resume_fiber(&mut self, pos: usize, resp: Option<R>) {
+        self.fibers[pos].result = resp;
         self.push_toexec(pos);
     }
 
@@ -479,6 +479,12 @@ impl<P,R> RunnerInt<P,R> {
 
     pub(crate) fn resp_chunk(&mut self, pos: usize, chunk: R) {
         self.fibers[pos].result = Some(chunk);
+        self.step_out(pos);
+    }
+
+    pub(crate) fn hibernate_join_main(&mut self, pos: usize) {
+        self.fibers[pos].state = FiberState::Unstacked;
+        self.tomain_fibers.push_back(FiberRef::new(self.pos, pos));
         self.step_out(pos);
     }
 
