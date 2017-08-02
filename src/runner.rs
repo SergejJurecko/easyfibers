@@ -76,21 +76,21 @@ impl<P,R> Runner<P,R> {
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.pos).register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Tcp(tcp), Some(param), None, true).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.pos).register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Listener(tcp), Some(param), None, true).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
     ///
     /// This function does not block and fiber gets executed on next poll().
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.pos).register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
+        runner(self.pos).register(Some(func), FiberSock::Udp(udp), Some(param), None, true).map(|_|{()})
     }
 
     /// Return resp after dur. Timer is one-shot.
@@ -101,6 +101,14 @@ impl<P,R> Runner<P,R> {
     /// Run socket-less fiber after dur.
     pub fn new_fiber_timer(&self, dur: Duration, func: FiberFn<P,R>, param: P) -> Option<TimerRef<P,R>> {
         runner::<P,R>(self.pos).new_timer(Some(func), dur, Some(param), None)
+    }
+
+    /// Start a processing fiber. Not tied to a socket or timer. Due to easyfibers being cooperative multitasking
+    /// this fiber will block entire thread until it either finishes executing FiberFn or it calls join_main.
+    ///
+    /// This function does not block and fiber gets executed on next poll().
+    pub fn new_processor(&self, func: FiberFn<P,R>, param: P) -> io::Result<()> {
+        runner::<P,R>(self.pos).register(Some(func), FiberSock::Empty, Some(param), None, true).map(|_|{()})
     }
 }
 
@@ -294,7 +302,7 @@ impl<P,R> RunnerInt<P,R> {
         param: Option<P>,
         resp: Option<R>) -> Option<TimerRef<P,R>> {
 
-        if let Ok(pos) = self.register(func, FiberSock::Empty, param, None) {
+        if let Ok(pos) = self.register(func, FiberSock::Empty, param, None, false) {
             self.fibers[pos].result = resp;
             if let Some(tk) = poller().timer_reg(self.fiber_id(pos), Some(dur)) {
                 self.fibers[pos].wtoken = Some(tk);
@@ -335,7 +343,7 @@ impl<P,R> RunnerInt<P,R> {
         if domain.len() == 0 {
             return Err(io::Error::new(io::ErrorKind::Other, "empty domain"));
         }
-        let pos = self.register(func, FiberSock::Empty, Some(param), parent)?;
+        let pos = self.register(func, FiberSock::Empty, Some(param), parent, false)?;
         let mut cp = ConnectParam {
             port,
             st,
@@ -377,9 +385,8 @@ impl<P,R> RunnerInt<P,R> {
     }
 
     pub(crate) fn register(&mut self, func: Option<FiberFn<P,R>>, 
-            ft: FiberSock, param: Option<P>, parent: Option<usize>) -> io::Result<usize> {
+            ft: FiberSock, param: Option<P>, parent: Option<usize>, schedule: bool) -> io::Result<usize> {
 
-        let empty = ft.is_empty();
         let mut fiber = FiberInt {
             ready: Ready::empty(),
             runner: self.pos,
@@ -421,7 +428,7 @@ impl<P,R> RunnerInt<P,R> {
         };
         // Only schedule for immediate execution if it has a socket.
         // Timers and DNS lookups don't.
-        if !empty {
+        if schedule {
             self.push_toexec(pos);
         }
         if let Some(parent) = parent {

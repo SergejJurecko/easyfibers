@@ -77,7 +77,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), None, true).map(|_|{()})
     }
 
     /// Start fiber on TCP listener.
@@ -85,7 +85,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_listener(&self, tcp: TcpListener, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.runner).register(Some(func), FiberSock::Listener(tcp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Listener(tcp), Some(param), None, true).map(|_|{()})
     }
 
     /// Start fiber on UDP socket.
@@ -93,7 +93,7 @@ impl<P,R> Fiber<P,R> {
     /// This function does not block and fiber gets executed on next poll(). There is no relationship
     /// between calling and created fiber.
     pub fn new_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), None).map(|_|{()})
+        runner(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), None, true).map(|_|{()})
     }
 
     /// Resolve domain, connect and run fiber.
@@ -116,14 +116,14 @@ impl<P,R> Fiber<P,R> {
     ///
     /// This function does not block current fiber.
     pub fn join_tcp(&self, tcp: TcpStream, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner::<P,R>(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id)).map(|_|{()})
+        runner::<P,R>(self.runner).register(Some(func), FiberSock::Tcp(tcp), Some(param), Some(self.id), true).map(|_|{()})
     }
 
     /// Start a child fiber with an udp socket.
     ///
     /// This function does not block current fiber.
     pub fn join_udp(&self, udp: UdpSocket, func: FiberFn<P,R>, param: P) -> io::Result<()> {
-        runner::<P,R>(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id)).map(|_|{()})
+        runner::<P,R>(self.runner).register(Some(func), FiberSock::Udp(udp), Some(param), Some(self.id), true).map(|_|{()})
     }
     
     /// Start a child fiber that resolves domain, connects and runs fiber.
@@ -333,12 +333,12 @@ pub(crate) enum FiberSock {
 }
 
 impl FiberSock {
-    pub fn is_empty(&self) -> bool {
-        match self {
-            &FiberSock::Empty => true,
-            _ => false,
-        }
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     match self {
+    //         &FiberSock::Empty => true,
+    //         _ => false,
+    //     }
+    // }
     pub fn evented(&self) -> io::Result<&Evented> {
         match self {
             &FiberSock::Tcp(ref tcp) => Ok(tcp),
