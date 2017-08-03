@@ -15,6 +15,7 @@ use std::marker::PhantomData;
 use native_tls::{TlsAcceptor, TlsStream, TlsConnector, HandshakeError};
 use dns::{dns_parse};
 use poller::{self, poller};
+use iovec::IoVec;
 
 /// Runner executes fibers on main stack. There can be multiple pollers each with its own fibers
 /// of a particular type.
@@ -127,6 +128,8 @@ pub(crate) struct RunnerInt<P,R> {
     free_fibers: VecDeque<usize>,
     tomain_fibers: VecDeque<FiberRef<P,R>>,
     results: VecDeque<R>,
+    // nginx uses a 16K tls buffer for write_bufs operations
+    tmp_buf: [u8;16384],
 }
 
 impl<P,R> RunnerInt<P,R> {
@@ -137,11 +140,41 @@ impl<P,R> RunnerInt<P,R> {
             free_fibers: VecDeque::with_capacity(4),
             tomain_fibers: VecDeque::with_capacity(4),
             results: VecDeque::new(),
+            tmp_buf: [0u8;16384],
         })
     }
 
     pub(crate) fn socket_timeout(&mut self, pos: usize, dur: Option<Duration>) {
         self.fibers[pos].timeout = dur;
+    }
+
+    pub(crate) fn read_bufs(&mut self, pos: usize, buf: &mut [&mut IoVec]) -> io::Result<usize> {
+        loop {
+            match self.fibers[pos].sock.read_bufs(buf) {
+                Ok(r) => {
+                    if r == 0 && buf.len() > 0 {
+                        return Err(io::Error::new(io::ErrorKind::NotConnected,"socket closed"));
+                    } else {
+                        return Ok(r);
+                    }
+                } 
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        if !self.fibers[pos].ready.is_readable() {
+                            self.fibers[pos].register(&poller().poller(), Ready::readable())?;
+                        }
+                        self.timed_step_out(pos);
+                        if self.fibers[pos].timed_out > 0 {
+                            self.fibers[pos].timed_out = 0;
+                            return Err(io::Error::new(io::ErrorKind::TimedOut,"read timeout"));
+                        }
+                    } else if err.kind() == io::ErrorKind::Interrupted {
+                    } else {
+                        return Err(err)
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn read(&mut self, pos: usize, buf: &mut [u8]) -> io::Result<usize> {
@@ -165,6 +198,39 @@ impl<P,R> RunnerInt<P,R> {
                         if self.fibers[pos].timed_out > 0 {
                             self.fibers[pos].timed_out = 0;
                             return Err(io::Error::new(io::ErrorKind::TimedOut,"read timeout"));
+                        }
+                    } else if err.kind() == io::ErrorKind::Interrupted {
+                    } else {
+                        // self.fibers[pos].state = FiberState::Closed;
+                        return Err(err)
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn write_bufs(&mut self, pos: usize, bufs: &[&IoVec]) -> io::Result<usize> {
+        loop {
+            match self.fibers[pos].sock.write_bufs(&mut self.tmp_buf, bufs) {
+                Ok(r) =>{
+                    if r == 0 && bufs.len() == 0 {
+                        return Err(io::Error::new(io::ErrorKind::NotConnected,"socket closed"));
+                    } else {
+                        return Ok(r);
+                    }
+                }
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        // self.fibers[pos].blocking_on = Ready::writable();
+                        // let mut rdy = self.fibers[pos].ready;
+                        if !self.fibers[pos].ready.is_writable() {
+                            self.fibers[pos].register(&poller().poller(), Ready::writable())?;
+                            // self.poll.register(self.fibers[pos].evented(), Token(pos), rdy, PollOpt::level())?;
+                        }
+                        self.timed_step_out(pos);
+                        if self.fibers[pos].timed_out > 0 {
+                            self.fibers[pos].timed_out = 0;
+                            return Err(io::Error::new(io::ErrorKind::TimedOut,"write timeout"));
                         }
                     } else if err.kind() == io::ErrorKind::Interrupted {
                     } else {

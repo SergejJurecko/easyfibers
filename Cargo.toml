@@ -19,6 +19,7 @@ rand = "0.3"
 byteorder = "1"
 quick-error = "1"
 libc = "0.2"
+iovec = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.4"

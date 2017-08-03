@@ -12,6 +12,7 @@ use wheel::Token as WToken;
 use std::time::Duration;
 use std::collections::VecDeque;
 use native_tls::{TlsStream, TlsConnector, TlsAcceptor, MidHandshakeTlsStream};
+use iovec::IoVec;
 /// Fiber execute function. It receives current fiber, parameter that was used
 /// to start the fiber and returns result that will be result of fiber.
 ///
@@ -167,6 +168,20 @@ impl<P,R> Fiber<P,R> {
     pub fn hibernate_join_main(&self) {
         runner::<P,R>(self.runner).hibernate_join_main(self.id);
     }
+
+    /// Read into an array of vectors.
+    pub fn read_bufs(&self, buf: &mut [&mut IoVec]) -> io::Result<usize> {
+        runner::<P,R>(self.runner).read_bufs(self.id, buf)
+    }
+
+    /// Write an array of vectors. This can be a good performance improvement
+    /// as it reduces calls to the kernel.
+    ///
+    /// CAVEAT: SSL/TLS implementations do not suppor this operation. On TLS sockets, 
+    /// bytes will be copied to a 16KB buffer and sent from there (value taken from nginx).
+    pub fn write_bufs(&self, buf: &[&IoVec]) -> io::Result<usize> {
+        runner::<P,R>(self.runner).write_bufs(self.id, buf)
+    }
 }
 
 // We use unwrap directly as we do not allow
@@ -203,6 +218,7 @@ impl<P,R> Write for Fiber<P,R> {
 pub struct FiberRef<P,R> {
     pub(crate) runner: i8,
     pub(crate) id: usize,
+    resumed: bool,
     p: PhantomData<P>,
     r: PhantomData<R>,
 }
@@ -212,6 +228,7 @@ impl<P,R> FiberRef<P,R> {
         FiberRef {
             runner,
             id,
+            resumed: false,
             p: PhantomData,
             r: PhantomData,
         }
@@ -221,13 +238,17 @@ impl<P,R> FiberRef<P,R> {
     /// If fiber has been stopped with hibernate_join_main response will not be passed to it.
     ///
     /// This function does not block, fiber gets resumed on next poll().
-    pub fn resume_fiber(self, resp: Option<R>) {
+    pub fn resume_fiber(mut self, resp: Option<R>) {
+        self.resumed = true;
         runner::<P,R>(self.runner).resume_fiber(self.id, resp);
     }
 }
 
 impl<P,R> Drop for FiberRef<P,R> {
     fn drop(&mut self) {
+        if self.resumed {
+            return;
+        }
         runner::<P,R>(self.runner).resume_fiber(self.id,None);
     }
 }
@@ -330,6 +351,83 @@ pub(crate) enum FiberSock {
     Tls(TlsStream<TcpStream>),
     TlsTemp(MidHandshakeTlsStream<TcpStream>),
     Empty,
+}
+
+impl FiberSock {
+    pub fn read_bufs(&mut self, bufs: &mut [&mut IoVec]) -> io::Result<usize> {
+        match self {
+            &mut FiberSock::Tcp(ref mut tcp) => tcp.read_bufs(bufs),
+            // tls implementations do not suport vectors
+            &mut FiberSock::Tls(ref mut tls) => {
+                let mut sz = 0;
+                let mut i = 0;
+                while i < bufs.len() {
+                    let res = tls.read(bufs[i]);
+                    if let Ok(s) = res {
+                        if s == 0 {
+                            return Ok(sz);
+                        }
+                        sz += s;
+                    } else if sz == 0 {
+                        return res;
+                    } else {
+                        return Ok(sz);
+                    }
+                    i += 1;
+                }
+                Ok(sz)
+            }
+            _ => {
+                Err(io::Error::new(io::ErrorKind::InvalidInput,"invalid socket"))
+            }
+        }
+    }
+
+    pub fn write_bufs(&mut self, tmp_buf: &mut [u8], bufs: &[&IoVec]) -> io::Result<usize> {
+        match self {
+            &mut FiberSock::Tcp(ref tcp) => tcp.write_bufs(bufs),
+            // For Tls use a temporary buffer to copy data into if the slices are small.
+            &mut FiberSock::Tls(ref mut tls) => {
+                let mut wpos = 0;
+                let mut sz = 0;
+                let mut i = 0;
+                while i < bufs.len() {
+                    let mut cur_buf_len = bufs[i].len();
+                    let cur_buf = &bufs[i];
+                    if cur_buf_len < 4096 && wpos + cur_buf_len < tmp_buf.len() {
+                        tmp_buf[wpos..wpos+cur_buf_len].copy_from_slice(&bufs[i]);
+                        wpos += cur_buf_len;
+                        continue;
+                    }
+                    let res = if wpos > 0 {
+                        let res = tls.write(&tmp_buf[0..wpos]);
+                        cur_buf_len = wpos;
+                        wpos = 0;
+                        res
+                    } else {
+                        i += 1;
+                        tls.write(cur_buf)
+                    };
+                    if let Ok(s) = res {
+                        if s == 0 {
+                            return Ok(sz);
+                        } else if s < cur_buf_len {
+                            return Ok(sz+s);
+                        }
+                        sz += s;
+                    } else if sz == 0 {
+                        return res;
+                    } else {
+                        return Ok(sz);
+                    }
+                }
+                Ok(sz)
+            }
+            _ => {
+                Err(io::Error::new(io::ErrorKind::InvalidInput,"invalid socket"))
+            }
+        }
+    }
 }
 
 impl FiberSock {
