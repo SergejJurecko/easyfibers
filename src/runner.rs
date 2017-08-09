@@ -189,8 +189,6 @@ impl<P,R> RunnerInt<P,R> {
                 } 
                 Err(err) => {
                     if err.kind() == io::ErrorKind::WouldBlock {
-                        // self.fibers[pos].blocking_on = Ready::readable();
-                        // let mut rdy = self.fibers[pos].ready;
                         if !self.fibers[pos].ready.is_readable() {
                             self.fibers[pos].register(&poller().poller(), Ready::readable())?;
                         }
@@ -201,7 +199,6 @@ impl<P,R> RunnerInt<P,R> {
                         }
                     } else if err.kind() == io::ErrorKind::Interrupted {
                     } else {
-                        // self.fibers[pos].state = FiberState::Closed;
                         return Err(err)
                     }
                 }
@@ -221,11 +218,8 @@ impl<P,R> RunnerInt<P,R> {
                 }
                 Err(err) => {
                     if err.kind() == io::ErrorKind::WouldBlock {
-                        // self.fibers[pos].blocking_on = Ready::writable();
-                        // let mut rdy = self.fibers[pos].ready;
                         if !self.fibers[pos].ready.is_writable() {
                             self.fibers[pos].register(&poller().poller(), Ready::writable())?;
-                            // self.poll.register(self.fibers[pos].evented(), Token(pos), rdy, PollOpt::level())?;
                         }
                         self.timed_step_out(pos);
                         if self.fibers[pos].timed_out > 0 {
@@ -234,7 +228,6 @@ impl<P,R> RunnerInt<P,R> {
                         }
                     } else if err.kind() == io::ErrorKind::Interrupted {
                     } else {
-                        // self.fibers[pos].state = FiberState::Closed;
                         return Err(err)
                     }
                 }
