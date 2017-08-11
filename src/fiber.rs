@@ -169,6 +169,19 @@ impl<P,R> Fiber<P,R> {
     }
 }
 
+impl<P,R> Clone for Fiber<P,R> {
+    /// Read data from socket. If no data is available to read, fiber will be scheduled out for another one,
+    /// until there is data available.
+    fn clone(&self) -> Self {
+        Fiber {
+            runner: self.runner,
+            id: self.id,
+            param: PhantomData,
+            resp: PhantomData,
+        }
+    }
+}
+
 // We use unwrap directly as we do not allow
 // creating fiber without a poller.
 impl<P,R> Read for Fiber<P,R> {
