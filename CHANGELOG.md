@@ -1,3 +1,9 @@
+# ??
+
+* read_bufs, write_bufs for vector socket operations (i.e. writev/readv)
+* new_processor for fibers that do not act on sockets but do processing
+* hibernate_join_main to reset fiber and wait for it to be resumed using FiberRef::resume_fiber or FiberRef::drop
+
 # 0.7.0 (Jul 31, 2017)
 
 * Split poller into Runner and Poller. This way we can instantiate multiple runners that are tied to a param and response type. This way multiple services can be executed at the same time without needing to share data structures.

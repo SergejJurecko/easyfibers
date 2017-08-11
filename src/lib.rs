@@ -18,6 +18,7 @@ extern crate native_tls;
 extern crate rand;
 extern crate byteorder;
 extern crate libc;
+extern crate iovec;
 #[macro_use(quick_error)]
 extern crate quick_error;
 #[cfg(test)]
